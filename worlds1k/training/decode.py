@@ -204,7 +204,3 @@ class AudioDecoderTrainer:
         if running_n > 0:
             result.train_losses.append(running_loss / running_n)
         return result
-
-
-# Backward compat alias
-DecoderTrainer = PixelDecoderTrainer

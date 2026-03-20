@@ -45,7 +45,7 @@ class TestPixelDecoder:
         assert out.max() <= 1.0
 
     def test_decoder_training(self):
-        from worlds1k.training.decode import DecoderTrainer, DecodeTrainConfig
+        from worlds1k.training.decode import PixelDecoderTrainer, DecodeTrainConfig
 
         config = _small_config()
         model = WorldModel.from_config(config)
@@ -57,7 +57,7 @@ class TestPixelDecoder:
 
         decoder = PixelDecoder(config.d_latents[0], frame_height=16, frame_width=16)
 
-        trainer = DecoderTrainer(
+        trainer = PixelDecoderTrainer(
             model,
             encoder,
             decoder,
