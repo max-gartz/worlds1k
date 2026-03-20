@@ -75,7 +75,7 @@ class Dreamer:
         if z_level0.size(1) >= 2:
             action = level0.action_head(z_level0[:, -2, :], z_curr)
         else:
-            action = torch.zeros(z_curr.size(0), level0.d_action, device=device)
+            action = torch.zeros(z_curr.size(0), level0.action_head.d_action, device=device)
 
         for _ in range(num_steps):
             z_next = level0.predictor(z_curr, action, context=None)

@@ -2,8 +2,8 @@
 
 Run directly::
 
-    uv run python -m worlds1k.train.world_model --dataset ucf101 --max-samples 8
-    uv run python -m worlds1k.train.world_model --dataset disney --max-samples 500 --num-epochs 50
+    uv run python -m worlds1k.train.world_model --dataset ucf101 --max-frames 5000
+    uv run python -m worlds1k.train.world_model --dataset disney --max-frames 500000
     uv run python -m worlds1k.train.world_model --list-datasets
 """
 

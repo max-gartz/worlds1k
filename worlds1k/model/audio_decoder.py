@@ -1,6 +1,6 @@
 """Audio decoder — maps latent states back to mel spectrograms.
 
-Phase 2 module, trained with the world model frozen. Takes level-0
+Phase 2 module, trained with the world model frozen. Takes level-1
 latent states and produces per-frame mel spectrograms that can be
 concatenated and passed through a vocoder for waveform synthesis.
 
@@ -28,7 +28,7 @@ class AudioDecoder(nn.Module):
     Parameters
     ----------
     d_latent : int
-        Dimensionality of the input latent (level-0 by default).
+        Dimensionality of the input latent (level-1 by default).
     n_mels : int
         Number of mel frequency bins (default 80, matching Whisper).
     t_mel : int

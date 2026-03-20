@@ -1,5 +1,6 @@
 """Model architecture components for the hierarchical predictive world model."""
 
+from worlds1k.model.audio_decoder import AudioDecoder
 from worlds1k.model.audio_encoder import AudioEncoder, AudioVideoEncoder
 from worlds1k.model.encoder_base import (
     BaseAudioEncoder,
@@ -16,6 +17,7 @@ from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
 __all__ = [
     "ActionHead",
+    "AudioDecoder",
     "AudioEncoder",
     "AudioVideoEncoder",
     "BaseAudioEncoder",
