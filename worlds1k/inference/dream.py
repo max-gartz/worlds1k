@@ -198,7 +198,7 @@ p {{ color:#8a8880; font-size:.9rem }} video {{ border:1px solid #252630; border
 <source src="{seed_vid}" type="video/mp4"></video></div>
 <h2>Dream Sequence</h2>
 <p>{dream.shape[0]} steps — autoregressive rollout, no sensory input after seed.</p>
-<div class="row"><video width="384" height="384" controls autoplay loop muted>
+<div class="row"><video width="384" height="384" controls autoplay loop>
 <source src="{dream_vid}" type="video/mp4"></video></div>
 <table class="stats"><tr><td>seed frames</td><td>{seed.shape[0]}</td></tr>
 <tr><td>dream steps</td><td>{dream.shape[0]}</td></tr>
