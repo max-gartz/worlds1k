@@ -1,0 +1,51 @@
+{
+  "os": "macOS-26.3-arm64-arm-64bit-Mach-O",
+  "python": "CPython 3.13.4",
+  "startedAt": "2026-03-20T18:00:59.561715Z",
+  "args": [
+    "--dataset",
+    "kinetics400-sample",
+    "--max-samples",
+    "450",
+    "--batch-size",
+    "4",
+    "--num-epochs",
+    "50",
+    "--total-steps",
+    "2000",
+    "--eval-freq",
+    "50",
+    "--output-dir",
+    "checkpoints/kinetics-local"
+  ],
+  "program": "-m worlds1k.training.pretrain",
+  "git": {
+    "remote": "https://github.com/max-gartz/worlds1k.git",
+    "commit": "93ef110a5b4ed34ff60f650b3f774722aa3c56ae"
+  },
+  "email": "gartz.maximilian@gmail.com",
+  "root": "/Users/maximilian.gartz/private/repos/projects/thousand-worlds",
+  "host": "maximiliangartz",
+  "executable": "/Users/maximilian.gartz/private/repos/projects/thousand-worlds/.venv/bin/python3",
+  "cpu_count": 14,
+  "cpu_count_logical": 14,
+  "disk": {
+    "/": {
+      "total": "494384795648",
+      "used": "297448542208"
+    }
+  },
+  "memory": {
+    "total": "51539607552"
+  },
+  "apple": {
+    "name": "Apple M4 Pro",
+    "ecpuCores": 4,
+    "pcpuCores": 10,
+    "gpuCores": 20,
+    "memoryGb": 48,
+    "swapTotalBytes": "18253611008",
+    "ramTotalBytes": "51539607552"
+  },
+  "writerId": "z8zria1vj3shuymr9ae0w6k2glizvcj0"
+}
