@@ -185,12 +185,16 @@ def _mel_to_waveform(mel: torch.Tensor, sample_rate: int = 16000, n_fft: int = 1
 
 def _audio_to_wav_b64(audio: torch.Tensor, sample_rate: int = 16000) -> str:
     """Convert (samples,) float tensor to base64 WAV data URI."""
+    import tempfile
+
     import torchaudio
 
-    buf = io.BytesIO()
     waveform = audio.unsqueeze(0) if audio.dim() == 1 else audio
-    torchaudio.save(buf, waveform, sample_rate, format="wav")
-    return f"data:audio/wav;base64,{base64.b64encode(buf.getvalue()).decode()}"
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as f:
+        torchaudio.save(f.name, waveform, sample_rate)
+        f.seek(0)
+        data = f.read()
+    return f"data:audio/wav;base64,{base64.b64encode(data).decode()}"
 
 
 def _frames_to_img_sequence(frames: torch.Tensor) -> list[str]:
