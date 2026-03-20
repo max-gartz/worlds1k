@@ -126,12 +126,6 @@ class Pretrainer:
         # Run one epoch to count steps, then use that.
         self._estimated_total = total_steps
 
-        # Step-0 eval: measure random baseline before any training
-        if self.global_step == 0:
-            init_loss = self._evaluate_once()
-            self.accelerator.print(f"step 0 | init loss {init_loss:.4f}")
-            self.accelerator.log({"train_loss": init_loss, "frames": 0}, step=0)
-
         for _epoch in range(cfg.num_epochs):
             self.model.train()
             self.encoder.train()
@@ -200,18 +194,6 @@ class Pretrainer:
 
         self.accelerator.end_training()
         return result
-
-    def _evaluate_once(self) -> float:
-        """Run one batch through the model without gradients."""
-        self.model.eval()
-        self.encoder.eval()
-        with torch.no_grad():
-            batch = next(iter(self.train_loader))
-            features = _encode_batch(self.encoder, batch)
-            loss = self.model(features)["loss"].item()
-        self.model.train()
-        self.encoder.train()
-        return loss
 
     def _evaluate(self) -> float:
         if self.val_loader is None:
