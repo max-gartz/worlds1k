@@ -192,70 +192,45 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
             self._cache_dir = None
 
     @property
-    def _cache_ready(self) -> bool:
+    def _cached_clips(self) -> list[Path]:
+        """Return sorted list of cached clip files, empty if no cache dir."""
         if self._cache_dir is None:
-            return False
-        marker = self._cache_dir / "_done"
-        return marker.exists()
+            return []
+        return sorted(self._cache_dir.glob("clip_*.pt"))
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, ...]]:
-        if self._cache_ready:
-            yield from self._iter_cache()
+        cached = self._cached_clips
+        if cached:
+            # Use whatever clips are already cached — even partial cache
+            print(f"loading {len(cached)} cached clips from {self._cache_dir}")  # noqa: T201
+            yield from self._iter_cache(cached)
         else:
+            # First run: stream, cache each clip, yield immediately
             yield from self._iter_and_cache()
 
-    def _iter_cache(self) -> Iterator[tuple[torch.Tensor, ...]]:
-        """Read pre-cached tensors from disk."""
-        cache = self._cache_dir  # guaranteed non-None by _cache_ready check
-        files = sorted(cache.glob("clip_*.pt"))  # type: ignore[union-attr]
-        buf: list[tuple[torch.Tensor, ...]] = []
-
-        for f in files:
-            clip = torch.load(f, weights_only=True, map_location="cpu")
-            sample = (clip,)
-
-            if self._shuffle_buffer > 0:
-                buf.append(sample)
-                if len(buf) >= self._shuffle_buffer:
-                    yield from _flush_buffer(buf)
-                    buf = []
-            else:
-                yield sample
-
-        if buf:
-            yield from _flush_buffer(buf)
+    def _iter_cache(self, files: list[Path]) -> Iterator[tuple[torch.Tensor, ...]]:
+        """Read cached tensors from disk with shuffle."""
+        indices = torch.randperm(len(files)).tolist()
+        for i in indices:
+            clip = torch.load(files[i], weights_only=True, map_location="cpu")
+            yield (clip,)
 
     def _iter_and_cache(self) -> Iterator[tuple[torch.Tensor, ...]]:
-        """Stream from source, cache to disk, and yield."""
+        """Stream from source, cache each clip to disk, yield immediately."""
         spec = self._spec
         source = self._raw_iter_hf_files() if spec.video_column == "__hf_files__" else self._raw_iter_stream()
 
         if self._cache_dir is not None:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-        buf: list[tuple[torch.Tensor, ...]] = []
         idx = 0
-
         for clip in source:
             if self._cache_dir is not None:
                 torch.save(clip, self._cache_dir / f"clip_{idx:06d}.pt")
             idx += 1
-            sample = (clip,)
+            yield (clip,)
 
-            if self._shuffle_buffer > 0:
-                buf.append(sample)
-                if len(buf) >= self._shuffle_buffer:
-                    yield from _flush_buffer(buf)
-                    buf = []
-            else:
-                yield sample
-
-        if buf:
-            yield from _flush_buffer(buf)
-
-        # Mark cache as complete
         if self._cache_dir is not None and idx > 0:
-            (self._cache_dir / "_done").write_text(str(idx))
             print(f"cached {idx} clips to {self._cache_dir}")  # noqa: T201
 
     def _raw_iter_stream(self) -> Iterator[torch.Tensor]:

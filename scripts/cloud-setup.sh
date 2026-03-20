@@ -31,6 +31,8 @@ print(f'CUDA: {torch.cuda.is_available()} ({torch.cuda.get_device_name(0) if tor
 print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB' if torch.cuda.is_available() else '')
 "
 
+nvidia-smi
+
 uv run python -m worlds1k.training.pretrain --list-datasets
 
 echo ""
