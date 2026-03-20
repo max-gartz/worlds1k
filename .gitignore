@@ -30,3 +30,4 @@ checkpoints/
 # Claude Code (local — symlinks, specs, settings)
 .claude/
 .specs/
+wandb/
