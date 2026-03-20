@@ -12,6 +12,7 @@ dependencies = [
     "pillow>=12.1.1",
     "safetensors>=0.4",
     "torch>=2.0",
+    "torchaudio>=2.10.0",
     "torchcodec>=0.10.0",
     "transformers>=4.40",
     "wandb>=0.25.1",

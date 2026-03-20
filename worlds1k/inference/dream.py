@@ -97,35 +97,89 @@ class Dreamer:
         return result
 
 
-def _frames_to_mp4_b64(frames: torch.Tensor, fps: int = 10) -> str:
-    """(T, C, H, W) float [0,1] → base64 mp4 data URI."""
+def _mel_to_waveform(mel: torch.Tensor, sample_rate: int = 16000, n_fft: int = 1024, n_mels: int = 80) -> torch.Tensor:
+    """Convert mel spectrogram to waveform using Griffin-Lim.
+
+    Parameters
+    ----------
+    mel : torch.Tensor
+        Mel spectrogram, shape ``(n_mels, T_mel)``.
+
+    Returns
+    -------
+    torch.Tensor
+        Waveform, shape ``(samples,)``.
+    """
+    from torchaudio.transforms import GriffinLim, InverseMelScale
+
+    inv_mel = InverseMelScale(n_stft=n_fft // 2 + 1, n_mels=n_mels, sample_rate=sample_rate)
+    griffin_lim = GriffinLim(n_fft=n_fft, hop_length=n_fft // 4)
+    spec = inv_mel(mel)
+    return griffin_lim(spec)
+
+
+def _frames_to_mp4_b64(
+    frames: torch.Tensor, fps: int = 10, audio: torch.Tensor | None = None, audio_sr: int = 16000
+) -> str:
+    """(T, C, H, W) float [0,1] → base64 mp4 data URI, optionally with audio."""
     import av
     from PIL import Image
 
     buf = io.BytesIO()
     container = av.open(buf, mode="w", format="mp4")
-    stream = container.add_stream("h264", rate=fps)
+    v_stream = container.add_stream("h264", rate=fps)
     h, w = frames.shape[2], frames.shape[3]
     scale = max(1, 256 // h)
-    stream.width = w * scale
-    stream.height = h * scale
-    stream.pix_fmt = "yuv420p"
+    v_stream.width = w * scale
+    v_stream.height = h * scale
+    v_stream.pix_fmt = "yuv420p"
+
+    a_stream = None
+    if audio is not None:
+        a_stream = container.add_stream("aac", rate=audio_sr)
+        a_stream.layout = "mono"
 
     for i in range(frames.size(0)):
         img = (frames[i].clamp(0, 1) * 255).byte().permute(1, 2, 0).numpy()
         pil = Image.fromarray(img).resize((w * scale, h * scale), Image.NEAREST)
         frame = av.VideoFrame.from_image(pil)
-        for packet in stream.encode(frame):
+        for packet in v_stream.encode(frame):
             container.mux(packet)
-    for packet in stream.encode():
+
+    for packet in v_stream.encode():
         container.mux(packet)
+
+    if a_stream is not None and audio is not None:
+        import numpy as np
+
+        audio_np = audio.numpy().astype(np.float32)
+        if audio_np.ndim == 1:
+            audio_np = audio_np.reshape(1, -1)
+        a_frame = av.AudioFrame.from_ndarray(audio_np, format="fltp", layout="mono")
+        a_frame.sample_rate = audio_sr
+        for packet in a_stream.encode(a_frame):
+            container.mux(packet)
+        for packet in a_stream.encode():
+            container.mux(packet)
+
     container.close()
     return f"data:video/mp4;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
 
-def _render_html(seed: torch.Tensor, dream: torch.Tensor, out: Path) -> None:
+def _render_html(
+    seed: torch.Tensor,
+    dream: torch.Tensor,
+    out: Path,
+    dream_mel: torch.Tensor | None = None,
+) -> None:
     seed_vid = _frames_to_mp4_b64(seed, fps=25)
-    dream_vid = _frames_to_mp4_b64(dream, fps=5)
+
+    dream_audio = None
+    if dream_mel is not None:
+        print("synthesizing audio from mel spectrogram (Griffin-Lim)...")  # noqa: T201
+        dream_audio = _mel_to_waveform(dream_mel.squeeze(0))
+
+    dream_vid = _frames_to_mp4_b64(dream, fps=5, audio=dream_audio)
     html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Thousand Worlds — Dream</title>
 <style>
@@ -245,7 +299,14 @@ def main(argv: list[str] | None = None) -> None:
     print(f"dream: {result['z_trajectory'].shape}")  # noqa: T201
 
     if decoder and "frames_trajectory" in result:
-        _render_html(seed_video.squeeze(0).cpu(), result["frames_trajectory"].squeeze(0).cpu(), args.output)
+        mel = result.get("mel_trajectory")
+        mel_cpu = mel.cpu() if mel is not None else None
+        _render_html(
+            seed_video.squeeze(0).cpu(),
+            result["frames_trajectory"].squeeze(0).cpu(),
+            args.output,
+            dream_mel=mel_cpu,
+        )
     else:
         torch.save(
             {k: v.cpu() for k, v in result.items() if isinstance(v, torch.Tensor)}, args.output.with_suffix(".pt")

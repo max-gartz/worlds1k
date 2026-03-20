@@ -94,7 +94,7 @@ class FrameDecoderTrainer:
     def train(self) -> DecodeTrainResult:
         cfg = self.config
         self.accelerator.init_trackers(
-            "worlds1k-decoder", config={"lr": cfg.learning_rate, "max_frames": cfg.max_frames}
+            "worlds1k-frame-decoder", config={"lr": cfg.learning_rate, "max_frames": cfg.max_frames}
         )
         result = DecodeTrainResult()
         t0 = time.monotonic()

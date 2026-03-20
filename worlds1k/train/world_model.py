@@ -116,7 +116,7 @@ class WorldModelTrainer:
     def train(self, run_name: str | None = None) -> WorldModelTrainResult:
         cfg = self.config
         self.accelerator.init_trackers(
-            "worlds1k",
+            "worlds1k-world-model",
             config={"lr": cfg.learning_rate, "max_frames": cfg.max_frames, "warmup": cfg.warmup_steps},
             init_kwargs={"wandb": {"name": run_name}},
         )
