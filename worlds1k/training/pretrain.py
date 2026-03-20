@@ -266,6 +266,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--image-size", type=int, default=64)
     p.add_argument("--cache-dir", type=str, default="auto", help="Tensor cache dir ('auto', path, or 'none').")
+    p.add_argument("--with-audio", action="store_true", help="Decode audio track and train with AudioVideoEncoder.")
 
     p.add_argument("--num-levels", type=int, default=3)
     p.add_argument("--encoder", type=str, default="dinov2-small")
@@ -297,17 +298,32 @@ def main(argv: list[str] | None = None) -> None:
         print("error: --dataset is required (or use --list-datasets)")  # noqa: T201
         return
 
-    from worlds1k.model.encoders import build_frame_encoder
-    from worlds1k.model.frame_encoder import VideoEncoder
     from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
-    config = WorldModelConfig(num_levels=args.num_levels, backbone_name=args.encoder, image_size=args.image_size)
-    model = WorldModel.from_config(config)
-    encoder = VideoEncoder(build_frame_encoder(config))
+    if args.with_audio:
+        from worlds1k.model.audio_encoder import AudioVideoEncoder
+
+        config = WorldModelConfig(
+            num_levels=args.num_levels,
+            backbone_name=args.encoder,
+            image_size=args.image_size,
+            d_input=512 + 256,  # visual + audio
+        )
+        model = WorldModel.from_config(config)
+        encoder = AudioVideoEncoder.from_pretrained(args.encoder, 512, "whisper-tiny", 256)
+        mode = f"{args.encoder} + whisper-tiny"
+    else:
+        from worlds1k.model.encoders import build_frame_encoder
+        from worlds1k.model.frame_encoder import VideoEncoder
+
+        config = WorldModelConfig(num_levels=args.num_levels, backbone_name=args.encoder, image_size=args.image_size)
+        model = WorldModel.from_config(config)
+        encoder = VideoEncoder(build_frame_encoder(config))
+        mode = args.encoder
 
     n_train = sum(p.numel() for p in list(model.parameters()) + list(encoder.parameters()) if p.requires_grad)
     n_frozen = sum(p.numel() for p in list(model.parameters()) + list(encoder.parameters()) if not p.requires_grad)
-    print(f"encoder: {args.encoder} | params: {_fmt(n_train)} trainable, {_fmt(n_frozen)} frozen")  # noqa: T201
+    print(f"encoder: {mode} | params: {_fmt(n_train)} trainable, {_fmt(n_frozen)} frozen")  # noqa: T201
 
     from torch.utils.data import DataLoader
 
@@ -321,6 +337,7 @@ def main(argv: list[str] | None = None) -> None:
         image_size=args.image_size,
         split=args.split,
         token=os.environ.get("HF_TOKEN"),
+        with_audio=args.with_audio,
         cache_dir=cache,
     )
     train_loader = DataLoader(train_ds, batch_size=args.batch_size)

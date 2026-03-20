@@ -10,10 +10,14 @@ Quick start::
     from worlds1k.data import StreamingVideoDataset, list_datasets
 
     print(list_datasets())
-    ds = StreamingVideoDataset("disney", max_samples=100, cache_dir="data/cache")
+    ds = StreamingVideoDataset("disney", max_samples=100)
 
-Each sample is a tuple ``(video,)`` where video is a ``(T, C, H, W)``
-float tensor in ``[0, 1]``.
+    # With audio (for datasets that have audio tracks):
+    ds = StreamingVideoDataset("epic-kitchens", max_samples=5, with_audio=True)
+
+Each sample is a tuple ``(video,)`` or ``(video, audio)`` where video is
+a ``(T, C, H, W)`` float tensor in ``[0, 1]`` and audio is a
+``(T, n_mels, T_audio)`` mel spectrogram tensor.
 """
 
 from __future__ import annotations
@@ -32,6 +36,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 log = logging.getLogger(__name__)
+
+WHISPER_SAMPLE_RATE = 16000
+WHISPER_N_MELS = 80
+WHISPER_CHUNK_SECONDS = 30
+WHISPER_N_SAMPLES = WHISPER_SAMPLE_RATE * WHISPER_CHUNK_SECONDS  # 480000
 
 
 @dataclass(frozen=True)
@@ -67,7 +76,7 @@ REGISTRY: dict[str, DatasetSpec] = {
     "epic-kitchens": DatasetSpec(
         "awsaf49/epic_kitchens_100",
         video_column="__hf_files__",
-        description="EPIC-KITCHENS-100 -- 268 full kitchen videos (501 GB, file-based).",
+        description="EPIC-KITCHENS-100 -- 268 kitchen videos with audio (501 GB, file-based).",
     ),
     "finevideo": DatasetSpec(
         "HuggingFaceFV/finevideo",
@@ -97,7 +106,7 @@ def resolve_dataset(name: str) -> DatasetSpec:
 
 
 def _process_video(source: Any, window_size: int, image_size: int) -> torch.Tensor:
-    """Decode, window-sample, and resize a video from any supported source.
+    """Decode, window-sample, and resize a video.
 
     Returns a ``(T, C, H, W)`` float tensor in ``[0, 1]``.
     """
@@ -129,9 +138,76 @@ def _process_video(source: Any, window_size: int, image_size: int) -> torch.Tens
     return video
 
 
-def _cache_key(name: str, split: str, max_samples: int | None, window_size: int, image_size: int) -> str:
-    """Deterministic cache key for a dataset configuration."""
-    raw = f"{name}|{split}|{max_samples}|{window_size}|{image_size}"
+def _process_audio_video(
+    raw_bytes: bytes, window_size: int, image_size: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Decode video + audio from raw bytes, return aligned (video, audio) pair.
+
+    Audio is extracted as per-frame mel spectrograms compatible with Whisper:
+    ``(T, 80, 3000)`` where each frame gets a 30s Whisper-sized context window
+    centered on that frame's timestamp. Frames share overlapping audio context.
+
+    For efficiency, we compute one mel spectrogram for the entire clip duration
+    and slice per-frame windows from it.
+    """
+    from torchcodec.decoders import AudioDecoder, VideoDecoder
+    from transformers import WhisperFeatureExtractor
+
+    vdec = VideoDecoder(raw_bytes)
+    adec = AudioDecoder(raw_bytes, sample_rate=WHISPER_SAMPLE_RATE)
+
+    n_frames = vdec.metadata.num_frames
+    fps = vdec.metadata.average_fps
+
+    start_frame = torch.randint(0, n_frames - window_size + 1, (1,)).item() if n_frames >= window_size else 0
+
+    end_frame = min(start_frame + window_size, n_frames)
+    video = vdec.get_frames_in_range(start=start_frame, stop=end_frame).data
+    if video.size(0) < window_size:
+        pad = window_size - video.size(0)
+        video = torch.cat([video, video[-1:].expand(pad, -1, -1, -1)], dim=0)
+    video = video.float() / 255.0
+    if video.shape[-2] != image_size or video.shape[-1] != image_size:
+        video = F.interpolate(video, size=(image_size, image_size), mode="bilinear", align_corners=False)
+
+    # Get all audio samples as mono
+    all_audio = adec.get_all_samples().data  # (channels, total_samples)
+    all_audio = all_audio.mean(dim=0) if all_audio.size(0) > 1 else all_audio.squeeze(0)
+
+    # Compute mel spectrogram for per-frame windows
+    feature_extractor = WhisperFeatureExtractor()
+    mel_list = []
+
+    for i in range(window_size):
+        frame_idx = start_frame + i
+        # Center a 30s window on this frame's timestamp
+        frame_time = frame_idx / fps
+        center_sample = int(frame_time * WHISPER_SAMPLE_RATE)
+        half_window = WHISPER_N_SAMPLES // 2
+        audio_start = max(0, center_sample - half_window)
+        audio_end = audio_start + WHISPER_N_SAMPLES
+
+        if audio_end > all_audio.size(0):
+            audio_end = all_audio.size(0)
+            audio_start = max(0, audio_end - WHISPER_N_SAMPLES)
+
+        chunk = all_audio[audio_start:audio_end]
+        # Pad if too short
+        if chunk.size(0) < WHISPER_N_SAMPLES:
+            chunk = F.pad(chunk, (0, WHISPER_N_SAMPLES - chunk.size(0)))
+
+        mel = feature_extractor(chunk.numpy(), sampling_rate=WHISPER_SAMPLE_RATE, return_tensors="pt")
+        mel_list.append(mel.input_features.squeeze(0))  # (80, 3000)
+
+    audio_tensor = torch.stack(mel_list)  # (T, 80, 3000)
+
+    return video, audio_tensor
+
+
+def _cache_key(
+    name: str, split: str, max_samples: int | None, window_size: int, image_size: int, with_audio: bool
+) -> str:
+    raw = f"{name}|{split}|{max_samples}|{window_size}|{image_size}|{with_audio}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -140,12 +216,16 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
 
     First epoch: streams from HuggingFace, decodes clips, saves each as a
     ``.pt`` file in ``cache_dir``. Subsequent epochs: reads directly from
-    cache — no network I/O, instant loading.
+    cache.
+
+    When ``with_audio=True``, also decodes the audio track and returns
+    ``(video, audio)`` tuples where audio is per-frame mel spectrograms
+    compatible with the Whisper encoder.
 
     Parameters
     ----------
     name_or_path : str
-        Short registry name (e.g. ``"ucf101"``) or a full HuggingFace path.
+        Short registry name or full HuggingFace path.
     max_samples : int or None
         Stop after this many clips per epoch.
     window_size : int
@@ -153,14 +233,13 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
     image_size : int
         Spatial resolution (height = width).
     split : str or None
-        Override the default split from the registry.
+        Override the default split.
     token : str or None
-        HuggingFace API token (needed for gated datasets).
-    shuffle_buffer : int
-        In-memory shuffle buffer size. Set to 0 for strict order.
+        HuggingFace API token.
+    with_audio : bool
+        If True, decode audio track and return (video, audio) tuples.
     cache_dir : str or Path or None
-        Directory for caching decoded tensors. Defaults to
-        ``~/.cache/worlds1k/<hash>``. Set to ``None`` to disable caching.
+        Cache directory. ``"auto"`` = ``~/.cache/worlds1k/<hash>``.
     """
 
     def __init__(
@@ -172,7 +251,7 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
         image_size: int = 64,
         split: str | None = None,
         token: str | None = None,
-        shuffle_buffer: int = 100,
+        with_audio: bool = False,
         cache_dir: str | Path | None = "auto",
     ) -> None:
         self._spec = resolve_dataset(name_or_path)
@@ -181,10 +260,10 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
         self._window_size = window_size
         self._image_size = image_size
         self._token = token
-        self._shuffle_buffer = shuffle_buffer
+        self._with_audio = with_audio
 
         if cache_dir == "auto":
-            key = _cache_key(name_or_path, self._split, max_samples, window_size, image_size)
+            key = _cache_key(name_or_path, self._split, max_samples, window_size, image_size, with_audio)
             self._cache_dir = Path.home() / ".cache" / "worlds1k" / key
         elif cache_dir is not None:
             self._cache_dir = Path(cache_dir)
@@ -193,7 +272,6 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
 
     @property
     def _cached_clips(self) -> list[Path]:
-        """Return sorted list of cached clip files, empty if no cache dir."""
         if self._cache_dir is None:
             return []
         return sorted(self._cache_dir.glob("clip_*.pt"))
@@ -201,22 +279,21 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
     def __iter__(self) -> Iterator[tuple[torch.Tensor, ...]]:
         cached = self._cached_clips
         if cached:
-            # Use whatever clips are already cached — even partial cache
             print(f"loading {len(cached)} cached clips from {self._cache_dir}")  # noqa: T201
             yield from self._iter_cache(cached)
         else:
-            # First run: stream, cache each clip, yield immediately
             yield from self._iter_and_cache()
 
     def _iter_cache(self, files: list[Path]) -> Iterator[tuple[torch.Tensor, ...]]:
-        """Read cached tensors from disk with shuffle."""
         indices = torch.randperm(len(files)).tolist()
         for i in indices:
-            clip = torch.load(files[i], weights_only=True, map_location="cpu")
-            yield (clip,)
+            data = torch.load(files[i], weights_only=True, map_location="cpu")
+            if isinstance(data, dict):
+                yield (data["video"], data["audio"])
+            else:
+                yield (data,)
 
     def _iter_and_cache(self) -> Iterator[tuple[torch.Tensor, ...]]:
-        """Stream from source, cache each clip to disk, yield immediately."""
         spec = self._spec
         source = self._raw_iter_hf_files() if spec.video_column == "__hf_files__" else self._raw_iter_stream()
 
@@ -224,16 +301,19 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
             self._cache_dir.mkdir(parents=True, exist_ok=True)
 
         idx = 0
-        for clip in source:
+        for item in source:
             if self._cache_dir is not None:
-                torch.save(clip, self._cache_dir / f"clip_{idx:06d}.pt")
+                torch.save(item, self._cache_dir / f"clip_{idx:06d}.pt")
             idx += 1
-            yield (clip,)
+            if isinstance(item, dict):
+                yield (item["video"], item["audio"])
+            else:
+                yield (item,)
 
         if self._cache_dir is not None and idx > 0:
             print(f"cached {idx} clips to {self._cache_dir}")  # noqa: T201
 
-    def _raw_iter_stream(self) -> Iterator[torch.Tensor]:
+    def _raw_iter_stream(self) -> Iterator[torch.Tensor | dict[str, torch.Tensor]]:
         from datasets import load_dataset
 
         spec = self._spec
@@ -245,13 +325,16 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
             if self._max_samples is not None and yielded >= self._max_samples:
                 break
             try:
-                clip = _process_video(item[col], self._window_size, self._image_size)
+                if self._with_audio and isinstance(item[col], bytes):
+                    video, audio = _process_audio_video(item[col], self._window_size, self._image_size)
+                    yield {"video": video, "audio": audio}
+                else:
+                    yield _process_video(item[col], self._window_size, self._image_size)
             except Exception:  # noqa: S112
                 continue
-            yield clip
             yielded += 1
 
-    def _raw_iter_hf_files(self) -> Iterator[torch.Tensor]:
+    def _raw_iter_hf_files(self) -> Iterator[torch.Tensor | dict[str, torch.Tensor]]:
         from huggingface_hub import HfFileSystem
 
         spec = self._spec
@@ -267,17 +350,14 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
             try:
                 with fs.open(path, "rb") as f:
                     raw = f.read()
-                clip = _process_video(raw, self._window_size, self._image_size)
+                if self._with_audio:
+                    video, audio = _process_audio_video(raw, self._window_size, self._image_size)
+                    yield {"video": video, "audio": audio}
+                else:
+                    yield _process_video(raw, self._window_size, self._image_size)
             except Exception:  # noqa: S112
                 continue
-            yield clip
             yielded += 1
-
-
-def _flush_buffer(buf: list[tuple[torch.Tensor, ...]]) -> Iterator[tuple[torch.Tensor, ...]]:
-    perm = torch.randperm(len(buf))
-    for i in perm:
-        yield buf[i]
 
 
 class SyntheticVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
