@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 import torch
 
@@ -42,27 +44,17 @@ class TestRegistry:
 
 class TestSyntheticVideoDataset:
     def test_video_only(self):
-        ds = SyntheticVideoDataset(num_samples=5, window_size=16, image_size=32)
-        samples = list(ds)
+        ds = SyntheticVideoDataset(window_size=16, image_size=32)
+        samples = list(itertools.islice(ds, 5))
         assert len(samples) == 5
-        sample = samples[0]
-        assert isinstance(sample, tuple)
-        assert len(sample) == 1
-        (video,) = sample
+        (video,) = samples[0]
         assert video.shape == (16, 3, 32, 32)
         assert video.min() >= 0.0
         assert video.max() <= 1.0
 
     def test_audio_video(self):
-        ds = SyntheticVideoDataset(
-            num_samples=3,
-            window_size=8,
-            image_size=16,
-            include_audio=True,
-            n_mels=80,
-            audio_time_steps=100,
-        )
-        samples = list(ds)
+        ds = SyntheticVideoDataset(window_size=8, image_size=16, include_audio=True, n_mels=80, audio_time_steps=100)
+        samples = list(itertools.islice(ds, 3))
         assert len(samples) == 3
         video, audio = samples[0]
         assert video.shape == (8, 3, 16, 16)
@@ -71,53 +63,37 @@ class TestSyntheticVideoDataset:
     def test_dataloader_compatible(self):
         from torch.utils.data import DataLoader
 
-        ds = SyntheticVideoDataset(num_samples=4, window_size=8, image_size=16)
+        ds = SyntheticVideoDataset(window_size=8, image_size=16)
         loader = DataLoader(ds, batch_size=2)
         batch = next(iter(loader))
         assert len(batch) == 1
         assert batch[0].shape == (2, 8, 3, 16, 16)
 
-    def test_re_iterable(self):
-        ds = SyntheticVideoDataset(num_samples=3, window_size=4, image_size=8)
-        epoch1 = list(ds)
-        epoch2 = list(ds)
-        assert len(epoch1) == 3
-        assert len(epoch2) == 3
+    def test_yields_forever(self):
+        ds = SyntheticVideoDataset(window_size=4, image_size=8)
+        samples = list(itertools.islice(ds, 100))
+        assert len(samples) == 100
 
 
 @pytest.mark.integration
 class TestStreamingVideoDataset:
-    """Integration tests that stream real data from HuggingFace.
-
-    These are slow and require network access.  Run with::
-
-        uv run pytest -m integration
-    """
-
     def test_ucf101(self):
-        ds = StreamingVideoDataset("ucf101", max_samples=2, window_size=128, image_size=64, shuffle_buffer=0)
-        samples = list(ds)
-        assert len(samples) >= 1
+        ds = StreamingVideoDataset("ucf101", window_size=128, image_size=64, max_videos=2)
+        samples = list(itertools.islice(ds, 3))
+        assert len(samples) == 3
         (video,) = samples[0]
         assert video.shape == (128, 3, 64, 64)
         assert video.dtype == torch.float32
         assert video.min() >= 0.0 and video.max() <= 1.0
 
     def test_disney(self):
-        ds = StreamingVideoDataset("disney", max_samples=2, window_size=128, image_size=64, shuffle_buffer=0)
-        samples = list(ds)
-        assert len(samples) >= 1
-        (video,) = samples[0]
-        assert video.shape == (128, 3, 64, 64)
-
-    def test_open_sora(self):
-        ds = StreamingVideoDataset("open-sora", max_samples=1, window_size=128, image_size=64, shuffle_buffer=0)
-        samples = list(ds)
-        assert len(samples) == 1
+        ds = StreamingVideoDataset("disney", window_size=128, image_size=64, max_videos=2)
+        samples = list(itertools.islice(ds, 2))
+        assert len(samples) == 2
         (video,) = samples[0]
         assert video.shape == (128, 3, 64, 64)
 
     def test_raw_hf_path(self):
-        ds = StreamingVideoDataset("sayakpaul/ucf101-subset", max_samples=1, window_size=128, image_size=64)
-        samples = list(ds)
-        assert len(samples) >= 1
+        ds = StreamingVideoDataset("sayakpaul/ucf101-subset", window_size=128, image_size=64)
+        samples = list(itertools.islice(ds, 1))
+        assert len(samples) == 1

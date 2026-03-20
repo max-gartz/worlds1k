@@ -9,7 +9,6 @@ is frozen so latent representations remain stable.
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,7 +29,7 @@ log = logging.getLogger(__name__)
 class DecodeTrainConfig:
     """Hyperparameters for phase 2 decoder training."""
 
-    num_epochs: int = 50
+    max_frames: int = 100_000
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
     eval_freq: int = 100
@@ -119,57 +118,44 @@ class DecoderTrainer:
         cfg = self.config
         result = DecodeTrainResult()
         global_step = 0
-        t_start = time.monotonic()
+        frames_seen = 0
         running_loss = 0.0
         running_count = 0
 
-        for _epoch in range(cfg.num_epochs):
-            self.decoder.train()
+        self.decoder.train()
 
-            for batch in self.train_loader:
-                (video,) = batch
-                video = video.to(self.decoder.proj.weight.device)
+        for batch in self.train_loader:
+            if frames_seen >= cfg.max_frames:
+                break
 
-                z_latents, target = self._encode_to_latents(video)
-                b, t, d = z_latents.shape
+            (video,) = batch
+            video = video.to(self.decoder.proj.weight.device)
 
-                # Decode each frame's latent back to pixels
-                z_flat = z_latents.reshape(b * t, d)
-                recon = self.decoder(z_flat)  # (B*T, C, H, W)
-                recon = recon.view(b, t, *recon.shape[1:])
+            z_latents, target = self._encode_to_latents(video)
+            b, t, d = z_latents.shape
+            frames_seen += b * t
 
-                # MSE loss against original frames
-                loss = nn.functional.mse_loss(recon, target)
+            z_flat = z_latents.reshape(b * t, d)
+            recon = self.decoder(z_flat).view(b, t, *video.shape[2:])
+            loss = nn.functional.mse_loss(recon, target)
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                if cfg.grad_clip_norm > 0:
-                    nn.utils.clip_grad_norm_(self.decoder.parameters(), cfg.grad_clip_norm)
-                self.optimizer.step()
+            self.optimizer.zero_grad()
+            loss.backward()
+            if cfg.grad_clip_norm > 0:
+                nn.utils.clip_grad_norm_(self.decoder.parameters(), cfg.grad_clip_norm)
+            self.optimizer.step()
 
-                global_step += 1
-                running_loss += loss.item()
-                running_count += 1
+            global_step += 1  # noqa: SIM113
+            running_loss += loss.item()
+            running_count += 1
 
-                if global_step % cfg.eval_freq == 0:
-                    train_loss = running_loss / running_count
-                    val_loss = self._evaluate()
-                    result.train_losses.append(train_loss)
-                    result.val_losses.append(val_loss)
-                    elapsed = time.monotonic() - t_start
-                    log.info(
-                        "decoder step %d | %s | train %.6f | val %.6f",
-                        global_step,
-                        f"{int(elapsed)}s",
-                        train_loss,
-                        val_loss,
-                    )
-                    running_loss = 0.0
-                    running_count = 0
-
-                    if cfg.checkpoint_dir is not None:
-                        cfg.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                        self.save_checkpoint(cfg.checkpoint_dir / f"decoder_step_{global_step}.pt")
+            if global_step % cfg.eval_freq == 0:
+                train_loss = running_loss / running_count
+                val_loss = self._evaluate()
+                result.train_losses.append(train_loss)
+                result.val_losses.append(val_loss)
+                running_loss = 0.0
+                running_count = 0
 
         if running_count > 0:
             train_loss = running_loss / running_count

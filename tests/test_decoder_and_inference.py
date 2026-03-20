@@ -52,7 +52,7 @@ class TestPixelDecoder:
         encoder = _FlatEncoder(32)
 
         # Pretrain briefly so model produces meaningful latents
-        ds = SyntheticVideoDataset(num_samples=4, window_size=8, image_size=16)
+        ds = SyntheticVideoDataset(window_size=8, image_size=16)
         loader = DataLoader(ds, batch_size=2)
 
         decoder = PixelDecoder(config.d_latents[0], frame_height=16, frame_width=16)
@@ -62,7 +62,7 @@ class TestPixelDecoder:
             encoder,
             decoder,
             loader,
-            config=DecodeTrainConfig(num_epochs=2, eval_freq=1),
+            config=DecodeTrainConfig(max_frames=64, eval_freq=1),
         )
         result = trainer.train()
         assert len(result.train_losses) > 0
