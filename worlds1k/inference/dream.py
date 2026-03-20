@@ -153,6 +153,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--max-videos", type=int, default=1)
     p.add_argument("--window-size", type=int, default=128)
     p.add_argument("--image-size", type=int, default=64)
+    p.add_argument("--with-audio", action="store_true", help="Use AudioVideoEncoder for seed encoding.")
     p.add_argument("--dream-steps", type=int, default=20)
     p.add_argument("--output", type=Path, default=Path("dream.html"))
     args = p.parse_args(argv)
@@ -161,8 +162,6 @@ def main(argv: list[str] | None = None) -> None:
 
     from worlds1k.data import StreamingVideoDataset
     from worlds1k.model.decoder import PixelDecoder
-    from worlds1k.model.encoders import build_frame_encoder
-    from worlds1k.model.frame_encoder import VideoEncoder
     from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
     device = torch.device(
@@ -170,14 +169,28 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
-    config = WorldModelConfig(image_size=args.image_size)
-    model = WorldModel.from_config(config).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
 
-    encoder = VideoEncoder(build_frame_encoder(config)).to(device)
-    encoder.load_state_dict(ckpt["encoder"])
-    encoder.eval()
+    if args.with_audio:
+        from worlds1k.model.audio_encoder import AudioVideoEncoder
+
+        config = WorldModelConfig(image_size=args.image_size, d_input=512 + 256)
+        model = WorldModel.from_config(config).to(device)
+        model.load_state_dict(ckpt["model"])
+        model.eval()
+        encoder = AudioVideoEncoder.from_pretrained("dinov2-small", 512, "whisper-tiny", 256).to(device)
+        encoder.load_state_dict(ckpt["encoder"])
+        encoder.eval()
+    else:
+        from worlds1k.model.encoders import build_frame_encoder
+        from worlds1k.model.frame_encoder import VideoEncoder
+
+        config = WorldModelConfig(image_size=args.image_size)
+        model = WorldModel.from_config(config).to(device)
+        model.load_state_dict(ckpt["model"])
+        model.eval()
+        encoder = VideoEncoder(build_frame_encoder(config)).to(device)
+        encoder.load_state_dict(ckpt["encoder"])
+        encoder.eval()
 
     decoder = None
     if args.decoder_checkpoint:
@@ -193,13 +206,20 @@ def main(argv: list[str] | None = None) -> None:
         max_videos=args.max_videos,
         window_size=args.window_size,
         image_size=args.image_size,
+        with_audio=args.with_audio,
         token=os.environ.get("HF_TOKEN"),
     )
-    seed_video = next(iter(ds))[0].unsqueeze(0).to(device)
+
+    seed = next(iter(ds))
+    seed_video = seed[0].unsqueeze(0).to(device)
     print(f"seed: {seed_video.shape}")  # noqa: T201
 
     with torch.no_grad():
-        features = encoder(seed_video)
+        if args.with_audio:
+            seed_audio = seed[1].unsqueeze(0).to(device)
+            features = encoder(seed_video, seed_audio)
+        else:
+            features = encoder(seed_video)
 
     dreamer = Dreamer(model, decoder)
     result = dreamer.dream(features, num_steps=args.dream_steps)
