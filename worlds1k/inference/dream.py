@@ -19,7 +19,7 @@ import argparse
 import base64
 import io
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -35,9 +35,15 @@ class Dreamer:
     extended imagined trajectory.
     """
 
-    def __init__(self, model: WorldModel, decoder: PixelDecoder | None = None) -> None:
+    def __init__(
+        self,
+        model: WorldModel,
+        decoder: PixelDecoder | None = None,
+        audio_decoder: Any | None = None,
+    ) -> None:
         self.model = model
         self.decoder = decoder
+        self.audio_decoder = audio_decoder
 
     @torch.no_grad()
     def dream(self, seed_features: torch.Tensor, num_steps: int) -> dict[str, torch.Tensor]:
@@ -84,6 +90,9 @@ class Dreamer:
             b, t, d = z_traj.shape
             frames = self.decoder(z_traj.reshape(b * t, d))
             result["frames_trajectory"] = frames.view(b, t, *frames.shape[1:])
+
+        if self.audio_decoder is not None:
+            result["mel_trajectory"] = self.audio_decoder.decode_sequence(z_traj)
 
         return result
 
@@ -149,6 +158,7 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="worlds1k.inference.dream", description="Dream from a trained world model.")
     p.add_argument("--checkpoint", type=Path, required=True, help="World model checkpoint.")
     p.add_argument("--decoder-checkpoint", type=Path, default=None, help="Pixel decoder checkpoint.")
+    p.add_argument("--audio-decoder-checkpoint", type=Path, default=None, help="Audio decoder checkpoint.")
     p.add_argument("--dataset", type=str, default="ucf101", help="Dataset for seed video.")
     p.add_argument("--max-videos", type=int, default=1)
     p.add_argument("--window-size", type=int, default=128)
@@ -201,6 +211,15 @@ def main(argv: list[str] | None = None) -> None:
         decoder.load_state_dict(dec_ckpt["decoder"])
         decoder.eval()
 
+    audio_decoder = None
+    if args.audio_decoder_checkpoint:
+        from worlds1k.model.audio_decoder import AudioDecoder
+
+        audio_decoder = AudioDecoder(config.d_latents[0]).to(device)
+        adec_ckpt = torch.load(args.audio_decoder_checkpoint, map_location="cpu", weights_only=True)
+        audio_decoder.load_state_dict(adec_ckpt["audio_decoder"])
+        audio_decoder.eval()
+
     ds = StreamingVideoDataset(
         args.dataset,
         max_videos=args.max_videos,
@@ -221,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             features = encoder(seed_video)
 
-    dreamer = Dreamer(model, decoder)
+    dreamer = Dreamer(model, decoder, audio_decoder)
     result = dreamer.dream(features, num_steps=args.dream_steps)
     print(f"dream: {result['z_trajectory'].shape}")  # noqa: T201
 
