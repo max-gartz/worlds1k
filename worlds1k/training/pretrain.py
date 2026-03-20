@@ -122,12 +122,21 @@ class Pretrainer:
         running_loss = 0.0
         running_n = 0
 
+        # Estimate total steps for LR schedule if not provided.
+        # Run one epoch to count steps, then use that.
+        self._estimated_total = total_steps
+
         for _epoch in range(cfg.num_epochs):
             self.model.train()
             self.encoder.train()
 
             for batch in self.train_loader:
-                lr = _cosine_lr(self.global_step, cfg.warmup_steps, cfg.learning_rate, total_steps or 1)
+                # On first epoch, estimate total steps from actual batch count
+                if self._estimated_total is None and self.global_step > 0 and _epoch == 0:
+                    steps_per_epoch = self.global_step
+                    self._estimated_total = steps_per_epoch * cfg.num_epochs
+
+                lr = _cosine_lr(self.global_step, cfg.warmup_steps, cfg.learning_rate, self._estimated_total or 10000)
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = lr
 
