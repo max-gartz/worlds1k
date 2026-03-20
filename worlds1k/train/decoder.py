@@ -42,11 +42,11 @@ class DecodeTrainResult:
     val_losses: list[float] = field(default_factory=list)
 
 
-def _encode_batch(encoder: nn.Module, batch: tuple[torch.Tensor, ...]) -> torch.Tensor:
+def _encode_batch(encoder: nn.Module, batch: tuple[torch.Tensor, ...], device: torch.device) -> torch.Tensor:
     """Encode a batch through the encoder (video-only or audio+video)."""
     if len(batch) == 1:
-        return encoder(batch[0])
-    return encoder(batch[0], batch[1])
+        return encoder(batch[0].to(device))
+    return encoder(batch[0].to(device), batch[1].to(device))
 
 
 class FrameDecoderTrainer:
@@ -83,16 +83,17 @@ class FrameDecoderTrainer:
         frames_seen = 0
         running_loss = 0.0
         running_n = 0
+        device = next(self.decoder.parameters()).device
         self.decoder.train()
 
         for batch in self.train_loader:
             if frames_seen >= cfg.max_frames:
                 break
 
-            video = batch[0].to(next(self.decoder.parameters()).device)
+            video = batch[0].to(device)
 
             with torch.no_grad():
-                features = _encode_batch(self.encoder, batch)
+                features = _encode_batch(self.encoder, batch, device)
                 z = self.world_model(features)["z"][0]  # level-0 latents
 
             b, t, d = z.shape
@@ -158,6 +159,7 @@ class AudioDecoderTrainer:
         frames_seen = 0
         running_loss = 0.0
         running_n = 0
+        device = next(self.audio_decoder.parameters()).device
         self.audio_decoder.train()
 
         for batch in self.train_loader:
@@ -165,13 +167,12 @@ class AudioDecoderTrainer:
                 break
 
             if len(batch) < 2:
-                continue  # skip batches without audio
+                continue
 
-            video = batch[0].to(next(self.audio_decoder.parameters()).device)
-            audio = batch[1].to(video.device)  # (B, T, n_mels, T_audio)
+            audio = batch[1].to(device)  # (B, T, n_mels, T_audio)
 
             with torch.no_grad():
-                features = _encode_batch(self.encoder, batch)
+                features = _encode_batch(self.encoder, batch, device)
                 z = self.world_model(features)["z"][0]  # level-0 latents
 
             b, t, d = z.shape
