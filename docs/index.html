@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thousand Worlds — Hierarchical Predictive World Model</title>
+<meta name="description" content="A hierarchical predictive world model that learns multi-scale temporal dynamics from video, rooted in cortical prediction theory.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Mono:wght@300;400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,300..900;1,8..60,300..900&display=swap" rel="stylesheet">
+<script>window.MathJax={tex:{inlineMath:[['$','$']],displayMath:[['$$','$$']]},svg:{fontCache:'global'}};</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0b0f;--bg-raised:#12131a;--bg-card:#181923;
+  --fg:#e2e0dc;--fg-dim:#8a8880;--fg-muted:#5a5850;
+  --accent:#c4a05c;--accent-dim:#8a7340;
+  --blue:#5b8fb9;--green:#6b9e7a;--red:#b9635b;
+  --border:#252630;--radius:6px;
+  --font-display:'Instrument Serif',Georgia,serif;
+  --font-body:'Source Serif 4',Georgia,serif;
+  --font-mono:'DM Mono','Menlo',monospace;
+}
+html{scroll-behavior:smooth;font-size:17px}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+::selection{background:var(--accent);color:var(--bg)}
+a{color:var(--accent);text-decoration:none;transition:color .2s}
+a:hover{color:var(--fg)}
+.container{max-width:860px;margin:0 auto;padding:0 2rem}
+.wide{max-width:1060px}
+
+/* Nav */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(10,11,15,.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:.6rem 0}
+nav .inner{max-width:1060px;margin:0 auto;padding:0 2rem;display:flex;align-items:center;gap:2rem}
+nav .logo{font-family:var(--font-display);font-size:1.1rem;color:var(--fg);white-space:nowrap}
+nav .logo em{color:var(--accent);font-style:italic}
+nav .links{display:flex;gap:1.2rem;font-family:var(--font-mono);font-size:.7rem;letter-spacing:.04em;flex-wrap:wrap}
+nav .links a{color:var(--fg-muted);transition:color .2s}
+nav .links a:hover{color:var(--fg)}
+
+/* Hero */
+.hero{min-height:90vh;display:flex;flex-direction:column;justify-content:center;position:relative;padding:8rem 0 4rem}
+.hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 40% at 30% 50%,rgba(196,160,92,.04) 0%,transparent 70%),radial-gradient(ellipse 50% 50% at 80% 30%,rgba(91,143,185,.03) 0%,transparent 60%);pointer-events:none}
+.hero h1{font-family:var(--font-display);font-size:clamp(3rem,8vw,5.5rem);font-weight:400;line-height:1.05;letter-spacing:-.02em;margin-bottom:1.5rem}
+.hero h1 em{font-style:italic;color:var(--accent)}
+.hero .subtitle{font-size:1.2rem;color:var(--fg-dim);max-width:580px;line-height:1.6;margin-bottom:2.5rem}
+.hero .cta{display:flex;gap:1rem;flex-wrap:wrap}
+.hero .cta a{display:inline-flex;align-items:center;gap:.5rem;padding:.6rem 1.4rem;border:1px solid var(--border);border-radius:var(--radius);font-family:var(--font-mono);font-size:.8rem;letter-spacing:.03em;color:var(--fg-dim);transition:all .25s}
+.hero .cta a:hover{border-color:var(--accent);color:var(--fg)}
+.hero .cta a.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.hero .cta a.primary:hover{background:var(--fg);border-color:var(--fg)}
+
+/* Sections */
+section{padding:5rem 0;border-top:1px solid var(--border)}
+section h2{font-family:var(--font-display);font-size:2.2rem;font-weight:400;margin-bottom:.5rem}
+section h2 .n{font-family:var(--font-mono);font-size:.85rem;color:var(--fg-muted);margin-right:.75rem;vertical-align:middle}
+section .lead{color:var(--fg-dim);font-size:1.05rem;max-width:620px;margin-bottom:2.5rem}
+h3{font-family:var(--font-display);font-size:1.4rem;font-weight:400;margin:2.5rem 0 .75rem}
+h4{font-family:var(--font-mono);font-size:.75rem;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin-bottom:.5rem}
+p+p{margin-top:1rem}
+.text{color:var(--fg-dim);line-height:1.7;max-width:680px}
+.text strong{color:var(--fg);font-weight:500}
+
+/* Math blocks */
+.math-block{text-align:center;padding:1.5rem 2rem;margin:1.5rem 0;background:var(--bg-raised);border:1px solid var(--border);border-radius:var(--radius);overflow-x:auto}
+mjx-container{font-size:1rem !important}
+
+/* Cards */
+.card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin:2rem 0}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem}
+.card p{font-size:.9rem;color:var(--fg-dim);line-height:1.6}
+
+/* Architecture grid */
+.arch{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin:2rem 0}
+.arch-cell{background:var(--bg-card);padding:1.5rem;text-align:center}
+.arch-cell.span{grid-column:1/-1;background:var(--bg-raised)}
+.arch-cell .label{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-muted);margin-bottom:.5rem}
+.arch-cell .value{font-family:var(--font-display);font-size:1.3rem;color:var(--fg)}
+.arch-cell .desc{font-size:.85rem;color:var(--fg-dim);margin-top:.4rem;line-height:1.5}
+
+/* Level diagram */
+.levels{display:flex;flex-direction:column;gap:2px;margin:2rem 0}
+.level{display:grid;grid-template-columns:120px 1fr;gap:1rem;align-items:center;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.2rem 1.5rem}
+.level:nth-child(1){border-left:3px solid var(--accent)}
+.level:nth-child(2){border-left:3px solid var(--blue)}
+.level:nth-child(3){border-left:3px solid var(--green)}
+.level .lname{font-family:var(--font-mono);font-size:.8rem;color:var(--fg-dim)}
+.level .ldetail{font-size:.9rem;color:var(--fg-dim);line-height:1.5}
+.level .ldetail strong{color:var(--fg);font-weight:500}
+
+/* Data flow diagram */
+.flow{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem 2rem;margin:2rem 0;font-family:var(--font-mono);font-size:.8rem;line-height:1.8;color:var(--fg-dim);overflow-x:auto;white-space:pre}
+.flow .hl{color:var(--accent)}
+.flow .cm{color:var(--fg-muted)}
+
+/* Table */
+table{width:100%;border-collapse:collapse;margin:2rem 0;font-size:.9rem}
+th{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-muted);text-align:left;padding:.75rem 1rem;border-bottom:1px solid var(--border)}
+td{padding:.75rem 1rem;border-bottom:1px solid var(--border);color:var(--fg-dim);vertical-align:top}
+td:first-child{color:var(--fg);white-space:nowrap}
+tr:hover td{background:var(--bg-raised)}
+.badge{display:inline-block;font-family:var(--font-mono);font-size:.65rem;letter-spacing:.04em;padding:.15rem .5rem;border-radius:3px}
+.badge-ok{background:rgba(107,158,122,.15);color:var(--green)}
+.badge-gated{background:rgba(185,99,91,.12);color:var(--red)}
+
+/* Code */
+pre{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;overflow-x:auto;font-family:var(--font-mono);font-size:.82rem;line-height:1.65;color:var(--fg-dim);margin:1.5rem 0}
+pre .c{color:var(--fg-muted)}
+pre .f{color:var(--accent)}
+pre .s{color:var(--green)}
+code{font-family:var(--font-mono);font-size:.85em;color:var(--fg-dim);background:var(--bg-raised);padding:.1em .3em;border-radius:3px}
+
+/* Notation table */
+.notation{margin:2rem 0}
+.notation td:first-child{font-family:var(--font-mono);font-size:.85rem;white-space:nowrap;width:140px}
+
+/* Footer */
+footer{padding:3rem 0;border-top:1px solid var(--border);text-align:center;color:var(--fg-muted);font-size:.85rem}
+footer a{color:var(--fg-dim)}
+
+/* Responsive */
+@media(max-width:640px){
+  .arch{grid-template-columns:1fr}
+  .level{grid-template-columns:1fr}
+  .hero{min-height:auto;padding:5rem 0 3rem}
+  nav .links{display:none}
+}
+
+/* Animations */
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+.hero h1,.hero .subtitle,.hero .cta{animation:fadeUp .8s ease both}
+.hero .subtitle{animation-delay:.1s}
+.hero .cta{animation-delay:.2s}
+</style>
+</head>
+<body>
+
+<nav><div class="inner">
+  <div class="logo">Thousand <em>Worlds</em></div>
+  <div class="links">
+    <a href="#motivation">Motivation</a>
+    <a href="#notation">Notation</a>
+    <a href="#core-loop">Core Loop</a>
+    <a href="#hierarchy">Hierarchy</a>
+    <a href="#actions">Actions</a>
+    <a href="#topdown">Top-Down</a>
+    <a href="#objective">Objective</a>
+    <a href="#decoder">Decoder</a>
+    <a href="#applications">Applications</a>
+    <a href="#datasets">Datasets</a>
+    <a href="#quickstart">Quick Start</a>
+  </div>
+</div></nav>
+
+<!-- Hero -->
+<header class="hero">
+<div class="container">
+  <h1>Thousand <em>Worlds</em></h1>
+  <p class="subtitle">
+    A hierarchical predictive world model that learns multi-scale temporal
+    dynamics from video. Rooted in Jeff Hawkins' cortical prediction theory
+    &mdash; predictions flow down, prediction errors flow up.
+  </p>
+  <div class="cta">
+    <a href="https://github.com/max-gartz/worlds1k" class="primary">GitHub</a>
+    <a href="#core-loop">Architecture</a>
+    <a href="#quickstart">Quick Start</a>
+  </div>
+</div>
+</header>
+
+<!-- Motivation -->
+<section id="motivation">
+<div class="container">
+  <h2><span class="n">01</span>Motivation</h2>
+  <p class="lead">
+    The brain doesn't reconstruct the world. It predicts it.
+  </p>
+  <div class="text">
+    <p>
+      Jeff Hawkins' <em>Thousand Brains Theory</em> proposes that the neocortex consists of
+      many parallel predictive models, each operating at different timescales and levels of
+      abstraction. Predictions flow <strong>down</strong> the cortical hierarchy; prediction
+      errors flow <strong>up</strong>. Learning is driven entirely by the discrepancy between
+      what was predicted and what was observed.
+    </p>
+    <p>
+      This architecture implements that principle for video understanding. A frozen visual
+      backbone encodes frames; a three-level learned hierarchy compresses time at multiple
+      scales, predicts future states in <strong>latent space</strong> (never pixels), and
+      uses top-down context from abstract levels to constrain concrete predictions.
+    </p>
+    <p>
+      The approach shares principles with LeCun's JEPA (Joint Embedding Predictive Architecture),
+      particularly the commitment to latent-space prediction over pixel reconstruction. Where
+      V-JEPA 2 operates at a single temporal scale, this project builds the multi-scale temporal
+      hierarchy that both Hawkins and LeCun theorized but neither has fully implemented.
+    </p>
+  </div>
+
+  <div class="card-grid" style="margin-top:2rem">
+    <div class="card"><h4>Cortical Hierarchy</h4><p>Multiple levels at different timescales. Top-down predictions constrain bottom-up processing. Prediction error is the only learning signal. Directly implements Hawkins' theory.</p></div>
+    <div class="card"><h4>Latent-Space Prediction</h4><p>No pixel reconstruction during training. Encoders learn what to discard. The model predicts abstract states, not observations. Overlaps with JEPA principles.</p></div>
+    <div class="card"><h4>Emergent Actions</h4><p>Transition codes discovered via prediction bottleneck, not labels. Different levels learn different action vocabularies &mdash; from optical flow to scene-level goals.</p></div>
+  </div>
+</div>
+</section>
+
+<!-- Notation -->
+<section id="notation">
+<div class="container">
+  <h2><span class="n">02</span>Notation</h2>
+  <p class="lead">Symbols used throughout the architecture description.</p>
+  <table class="notation">
+    <thead><tr><th>Symbol</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td>$x_t$</td><td>Raw sensory frame at time $t$</td></tr>
+      <tr><td>$z_t^{(\ell)}$</td><td>Latent state at level $\ell$, time $t$</td></tr>
+      <tr><td>$a_t^{(\ell)}$</td><td>Inferred action / transition code at level $\ell$</td></tr>
+      <tr><td>$E^{(\ell)}$</td><td>Encoder from level $\ell{-}1$ representations to level $\ell$</td></tr>
+      <tr><td>$P^{(\ell)}$</td><td>Predictor (transition model) at level $\ell$</td></tr>
+      <tr><td>$D^{(\ell)}$</td><td>Top-down decoder from level $\ell$ to level $\ell{-}1$</td></tr>
+      <tr><td>$T_\ell$</td><td>Temporal stride of level $\ell$</td></tr>
+      <tr><td>$\Omega(z)$</td><td>Sparsity penalty (SDR constraint)</td></tr>
+      <tr><td>$\rho$</td><td>Target activation fraction (e.g. 0.05 = 5% of units active)</td></tr>
+    </tbody>
+  </table>
+  <p class="text">Level 0 is the pixel level: $z_t^{(0)} = x_t$. A frozen DINOv2 backbone encodes frames into $z_t^{(1)}$.</p>
+</div>
+</section>
+
+<!-- Core Loop -->
+<section id="core-loop">
+<div class="container">
+  <h2><span class="n">03</span>The Core Loop</h2>
+  <p class="lead">At every level, the same four operations repeat.</p>
+
+  <h3>Encode</h3>
+  <p class="text">Compress a sequence of lower-level states into a single latent:</p>
+  <div class="math-block">$$z_t^{(\ell)} = E^{(\ell)}\!\left(z_{t-T_\ell+1}^{(\ell-1)},\; \ldots,\; z_t^{(\ell-1)}\right)$$</div>
+  <p class="text">The encoder $E^{(\ell)}$ is a <strong>learned temporal pooling</strong> operation &mdash; a causal transformer that attends to the most informative moments in the window and produces a fixed-size output, forcing compression.</p>
+
+  <h3>Infer Action</h3>
+  <p class="text">The transition code $a_t^{(\ell)}$ captures <em>what changed</em> between consecutive latent states:</p>
+  <div class="math-block">$$a_t^{(\ell)} = f_a^{(\ell)}\!\left(z_t^{(\ell)},\; z_{t+T_\ell}^{(\ell)}\right)$$</div>
+  <p class="text">This is learned jointly &mdash; $a_t^{(\ell)}$ is a bottleneck that must be informative enough to support prediction but compact enough to generalize. It is <em>not</em> a motor command; it's whatever abstract transition descriptor the level needs.</p>
+
+  <h3>Predict</h3>
+  <p class="text">Given current state and action, predict next state, biased by top-down context from the level above:</p>
+  <div class="math-block">$$\hat{z}_{t+T_\ell}^{(\ell)} = P^{(\ell)}\!\left(z_t^{(\ell)},\; a_t^{(\ell)}\right) + \alpha \cdot c_t^{(\ell+1)}$$</div>
+  <p class="text">where $c_t^{(\ell+1)} = D^{(\ell+1)}(z_k^{(\ell+1)})$ is the top-down context and $\alpha$ is a learned scalar.</p>
+
+  <h3>Learn from Error</h3>
+  <div class="math-block">$$\mathcal{L}^{(\ell)} = \left\| z_{t+T_\ell}^{(\ell)} - \hat{z}_{t+T_\ell}^{(\ell)} \right\|^2 + \lambda_s \, \Omega\!\left(z_t^{(\ell)}\right) + \lambda_a \, \Omega\!\left(a_t^{(\ell)}\right)$$</div>
+  <p class="text">The $\Omega$ terms are sparsity penalties. Prediction error drives all learning &mdash; there is no reconstruction loss back to pixels.</p>
+</div>
+</section>
+
+<!-- Hierarchy -->
+<section id="hierarchy">
+<div class="container wide">
+  <h2><span class="n">04</span>Temporal Hierarchy</h2>
+  <p class="lead">
+    Each level consumes $T_\ell$ steps of the level below and produces one latent.
+    Total receptive field: $T_1 \times T_2 \times T_3 = 64$ frames.
+  </p>
+
+  <div class="levels">
+    <div class="level">
+      <div class="lname">Level 1<br><span style="font-size:.7rem;color:var(--accent)">$T_1 = 1$</span></div>
+      <div class="ldetail">
+        <strong>Frame-level.</strong> Encodes each frame independently via frozen DINOv2 &rarr; learned projection.
+        Latent dim 256, action dim 64.
+        Predicts $z_{t+1}^{(1)}$ &mdash; what objects are where <em>next</em>. Timescale: ~33ms.
+      </div>
+    </div>
+    <div class="level">
+      <div class="lname">Level 2<br><span style="font-size:.7rem;color:var(--blue)">$T_2 = 8$</span></div>
+      <div class="ldetail">
+        <strong>Action-level.</strong> A causal transformer compresses 8 level-1 latents into one vector $z_k^{(2)}$
+        capturing the <em>gist</em> of what happened ("ball moved left", "hand reached for cup").
+        Latent dim 128, action dim 32. Timescale: ~250ms.
+      </div>
+    </div>
+    <div class="level">
+      <div class="lname">Level 3<br><span style="font-size:.7rem;color:var(--green)">$T_3 = 8$</span></div>
+      <div class="ldetail">
+        <strong>Scene-level.</strong> Compresses 8 level-2 latents (= 64 frames) into a scene summary $z_m^{(3)}$
+        ("person is making coffee"). Latent dim 64, action dim 16. Timescale: ~2s.
+      </div>
+    </div>
+  </div>
+
+  <h3>Data Flow</h3>
+  <div class="flow"><span class="hl">Frame x_t</span>
+  │
+  ▼
+<span class="hl">E¹</span>: encode single frame → z_t^(1)        <span class="cm">[every frame, ~33ms]</span>
+  │
+  ├─→ <span class="hl">P¹</span>: predict z_{t+1}^(1) from z_t^(1), a_t^(1), c^(2)
+  │         loss: ‖z_{t+1}^(1) - ẑ_{t+1}^(1)‖²
+  │
+  ▼ <span class="cm">(every 8 frames)</span>
+<span class="hl">E²</span>: encode 8 z^(1)'s → z_k^(2)           <span class="cm">[every 8 frames, ~250ms]</span>
+  │
+  ├─→ <span class="hl">P²</span>: predict z_{k+1}^(2) from z_k^(2), a_k^(2), c^(3)
+  ├─→ <span class="hl">D²</span>: project z_k^(2) → c^(2) for level 1  <span class="cm">[top-down]</span>
+  │
+  ▼ <span class="cm">(every 64 frames)</span>
+<span class="hl">E³</span>: encode 8 z^(2)'s → z_m^(3)           <span class="cm">[every 64 frames, ~2s]</span>
+  │
+  ├─→ <span class="hl">P³</span>: predict z_{m+1}^(3)
+  ├─→ <span class="hl">D³</span>: project z_m^(3) → c^(3) for level 2  <span class="cm">[top-down]</span></div>
+  <p class="text">All arrows carry gradients. The whole model trains end-to-end from video with one loss.</p>
+</div>
+</section>
+
+<!-- Actions -->
+<section id="actions">
+<div class="container">
+  <h2><span class="n">05</span>Joint Action&ndash;Sensory Learning</h2>
+  <p class="lead">
+    Actions are not labels. They emerge from a prediction bottleneck.
+  </p>
+  <div class="text">
+    <p>
+      Action codes $a_t^{(\ell)}$ are <strong>inferred</strong> as the minimal information needed
+      to predict the next state given the current state:
+    </p>
+  </div>
+  <div class="math-block">$$a_t^{(\ell)} = f_a^{(\ell)}\!\left(z_t^{(\ell)},\; z_{t+T_\ell}^{(\ell)}\right)$$</div>
+  <div class="text">
+    <p>
+      At <strong>level 1</strong>, $a_t^{(1)}$ learns optical flow or local motion vectors.
+      At <strong>level 2</strong>, $a_k^{(2)}$ represents "reach", "push", or "turn".
+      At <strong>level 3</strong>, $a_m^{(3)}$ represents "go to kitchen" or "start new task".
+    </p>
+    <p>
+      The action space is not predefined &mdash; it emerges from the prediction bottleneck.
+      If a code carries more information than needed, the sparsity penalty compresses it.
+      If too little, prediction error increases and the model expands its use.
+    </p>
+    <p>
+      When real motor commands are available (e.g., from a robot), they can be fed as additional
+      input to $P^{(\ell)}$ at the lowest level, and $a_t^{(1)}$ learns to align with them.
+    </p>
+  </div>
+</div>
+</section>
+
+<!-- Top-Down -->
+<section id="topdown">
+<div class="container">
+  <h2><span class="n">06</span>Top-Down Prediction</h2>
+  <p class="lead">Higher levels constrain lower levels via a context signal.</p>
+  <div class="math-block">$$c_t^{(\ell+1)} = D^{(\ell+1)}\!\left(z_k^{(\ell+1)}\right)$$</div>
+  <div class="text">
+    <p>
+      The predictor at level $\ell$ receives this as an additive bias:
+      $\hat{z} = P^{(\ell)}(z, a) + \alpha \cdot c^{(\ell+1)}$.
+      The additive form is simplest; multiplicative gating gives the higher level
+      more control but is harder to train.
+    </p>
+    <p>
+      <strong>Effect:</strong> When level 3 has confidently predicted "person continues making coffee",
+      this biases level 2 toward coffee-making sub-actions, which biases level 1 toward
+      the corresponding motion patterns. Surprise at any level propagates up as prediction error.
+    </p>
+  </div>
+</div>
+</section>
+
+<!-- Objective -->
+<section id="objective">
+<div class="container">
+  <h2><span class="n">07</span>Training Objective</h2>
+  <p class="lead">A single loss trains everything end-to-end.</p>
+  <div class="math-block">$$\mathcal{L} = \sum_{\ell=1}^{L} \gamma_\ell \, \mathbb{E}_t\!\left[\left\| z_{t+T_\ell}^{(\ell)} - \hat{z}_{t+T_\ell}^{(\ell)} \right\|^2\right] + \lambda_s \sum_{\ell=1}^{L} \mathbb{E}_t\!\left[\Omega\!\left(z_t^{(\ell)}\right)\right] + \lambda_a \sum_{\ell=1}^{L} \mathbb{E}_t\!\left[\Omega\!\left(a_t^{(\ell)}\right)\right]$$</div>
+  <div class="text">
+    <p>
+      The weights $\gamma_\ell$ balance levels (all 1.0 by default). All encoders, predictors,
+      top-down decoders, and action inference networks receive gradients from this single objective.
+    </p>
+  </div>
+
+  <h3>Sparsity / SDR Constraints</h3>
+  <div class="text">
+    <p>Without explicit constraints, the model can collapse: all latents converge to the same point.</p>
+  </div>
+  <div class="math-block">$$\Omega(z) = \left(\frac{\|z\|_1}{d} - \rho\right)^2$$</div>
+  <div class="text">
+    <p>
+      where $d$ is the latent dimension and $\rho$ is a target activation fraction (e.g., $\rho = 0.05$).
+      This encourages <strong>sparsity</strong> (most units near zero), <strong>distribution</strong>
+      (the <em>which</em> 5% varies across inputs, giving $\binom{d}{k}$ possible patterns), and
+      <strong>disentanglement</strong> (sparse codes tend to separate independent factors).
+    </p>
+  </div>
+</div>
+</section>
+
+<!-- Decoder -->
+<section id="decoder">
+<div class="container">
+  <h2><span class="n">08</span>Pixel Decoder (Phase 2)</h2>
+  <p class="lead">
+    A separate decoder learns to read the frozen latent space &mdash; not reshape it.
+  </p>
+  <div class="text">
+    <p>
+      Phase 1 learns purely in latent space. Phase 2 trains a standalone decoder
+      $D_\text{pixel}$ that maps level-1 latents back to frames. All Phase 1 weights are frozen.
+    </p>
+  </div>
+  <div class="math-block">$$\hat{x}_t = D_\text{pixel}\!\left(z_t^{(1)}\right)$$</div>
+  <div class="text">
+    <p>The full decoder objective combines MSE, perceptual, and (optionally) adversarial losses:</p>
+  </div>
+  <div class="math-block">$$\mathcal{L}_\text{decoder} = \left\| x_t - \hat{x}_t \right\|^2 + \lambda_p \sum_l \left\| \phi_l(x_t) - \phi_l(\hat{x}_t) \right\|^2 + \lambda_\text{adv} \, \mathcal{L}_\text{GAN}$$</div>
+
+  <h3>Multi-Resolution Decoding</h3>
+  <table>
+    <thead><tr><th>Level</th><th>Expected Output</th><th>Use Case</th></tr></thead>
+    <tbody>
+      <tr><td>$z^{(1)}$</td><td>Sharp frame (full detail)</td><td>Primary decoder</td></tr>
+      <tr><td>$z^{(2)}$</td><td>Blurry scene layout</td><td>Visualize what the 250ms-level "sees"</td></tr>
+      <tr><td>$z^{(3)}$</td><td>Abstract scene type</td><td>Visualize episode-level understanding</td></tr>
+    </tbody>
+  </table>
+</div>
+</section>
+
+<!-- Applications -->
+<section id="applications">
+<div class="container">
+  <h2><span class="n">09</span>Applications</h2>
+  <p class="lead">What the model can do once training converges.</p>
+  <div class="card-grid">
+    <div class="card"><h4>Next-State Prediction</h4><p>Feed frames, predict what comes next at every level. Low levels predict motion; mid levels predict actions; high levels predict scene transitions. Inference is training without the weight update.</p></div>
+    <div class="card"><h4>Anomaly Detection</h4><p>Prediction error is a free anomaly signal. High error at low levels = visual glitch. Mid levels = unusual behavior. Top levels = structurally anomalous event. Full spectrum without training separate detectors.</p></div>
+    <div class="card"><h4>Learned Representations</h4><p>Latent states as feature vectors for activity recognition, scene classification, object tracking, temporal segmentation. Many tasks need only a linear probe &mdash; no fine-tuning.</p></div>
+    <div class="card"><h4>Action Vocabulary</h4><p>Each level develops its own transition vocabulary. Low: optical flow. Mid: "pick up", "open". Top: "go to kitchen". Emerges from prediction, not labels. Enables video search by action code.</p></div>
+    <div class="card"><h4>Mental Simulation</h4><p>Run the predictor forward without sensory input. Explore branching futures by conditioning on different action codes. Enables counterfactual reasoning and model-based RL.</p></div>
+    <div class="card"><h4>Dreaming</h4><p>Cut sensory input entirely. Top-down flow keeps trajectories coherent; without bottom-up error correction, details drift and scenes morph. Useful for data augmentation, planning, and model consolidation.</p></div>
+  </div>
+</div>
+</section>
+
+<!-- Datasets -->
+<section id="datasets">
+<div class="container wide">
+  <h2><span class="n">10</span>Datasets</h2>
+  <p class="lead">Streams from HuggingFace. Only the requested samples are downloaded.</p>
+  <table>
+    <thead><tr><th>Name</th><th>HuggingFace Path</th><th>Description</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><code>ucf101</code></td><td>sayakpaul/ucf101-subset</td><td>UCF101 action recognition &mdash; tiny, ideal for smoke tests</td><td><span class="badge badge-ok">open</span></td></tr>
+      <tr><td><code>disney</code></td><td>Wild-Heart/Disney-VideoGeneration-Dataset</td><td>Disney animated video clips (640&times;360)</td><td><span class="badge badge-ok">open</span></td></tr>
+      <tr><td><code>open-sora</code></td><td>LanguageBind/Open-Sora-Plan-v1.1.0</td><td>Open-Sora video generation clips (1080p)</td><td><span class="badge badge-ok">open</span></td></tr>
+      <tr><td><code>kinetics400-sample</code></td><td>JackWong0911/kinetic-400_450samples</td><td>Kinetics-400 sample &mdash; 450 clips with raw mp4</td><td><span class="badge badge-ok">open</span></td></tr>
+      <tr><td><code>epic-kitchens</code></td><td>awsaf49/epic_kitchens_100</td><td>EPIC-KITCHENS-100 &mdash; 268 full kitchen videos (501 GB)</td><td><span class="badge badge-ok">open</span></td></tr>
+      <tr><td><code>finevideo</code></td><td>HuggingFaceFV/finevideo</td><td>43K YouTube videos (~3,400 h)</td><td><span class="badge badge-gated">gated</span></td></tr>
+      <tr><td><code>egocentric-10k</code></td><td>builddotai/Egocentric-10K</td><td>10K egocentric factory video samples (1080p)</td><td><span class="badge badge-gated">gated</span></td></tr>
+    </tbody>
+  </table>
+  <p class="text" style="font-size:.85rem">
+    Gated datasets require accepting Terms of Service on HuggingFace and setting <code>HF_TOKEN</code>.
+    Any dataset with a <code>Video</code> feature works &mdash; pass a raw path: <code>--dataset org/name</code>.
+  </p>
+</div>
+</section>
+
+<!-- Architecture Implementation -->
+<section id="implementation">
+<div class="container">
+  <h2><span class="n">11</span>Implementation</h2>
+  <p class="lead">Built with PyTorch, HuggingFace Transformers, and torchcodec.</p>
+
+  <div class="arch">
+    <div class="arch-cell">
+      <div class="label">Visual Backbone</div>
+      <div class="value">DINOv2</div>
+      <div class="desc">Frozen self-supervised ViT. Extracts CLS token per frame.</div>
+    </div>
+    <div class="arch-cell">
+      <div class="label">Audio Backbone</div>
+      <div class="value">Whisper</div>
+      <div class="desc">Optional frozen speech encoder for multimodal training.</div>
+    </div>
+    <div class="arch-cell">
+      <div class="label">Pixel Decoder</div>
+      <div class="value">ConvTranspose</div>
+      <div class="desc">Phase 2. Transposed CNN mapping latents to pixels.</div>
+    </div>
+    <div class="arch-cell span">
+      <div class="label">Hierarchical World Model</div>
+      <div class="value">3-Level Predictive Hierarchy</div>
+      <div class="desc">Encoder + ActionHead + Predictor + TopDownDecoder per level. Trained end-to-end.</div>
+    </div>
+  </div>
+
+  <h3>Project Structure</h3>
+  <pre>worlds1k/
+  model/
+    world_model.py      <span class="c"># Hierarchical predictive model</span>
+    world_layer.py      <span class="c"># Single hierarchy level (Encoder, ActionHead, Predictor, TopDown)</span>
+    frame_encoder.py    <span class="c"># DINOv2 visual encoder + VideoEncoder wrapper</span>
+    audio_encoder.py    <span class="c"># Whisper audio encoder + AudioVideoEncoder fusion</span>
+    decoder.py          <span class="c"># PixelDecoder (transposed CNN, phase 2)</span>
+    encoders.py         <span class="c"># Abstract base classes + factory functions</span>
+  training/
+    pretrain.py         <span class="c"># Phase 1 training loop + CLI</span>
+    decode.py           <span class="c"># Phase 2 decoder training loop</span>
+  inference/
+    predict.py          <span class="c"># Next-state prediction from observed frames</span>
+    dream.py            <span class="c"># Autoregressive dreaming rollout</span>
+  data.py               <span class="c"># Dataset registry + streaming loader</span>
+tests/                  <span class="c"># 22 unit tests + 5 integration tests</span>
+resources/              <span class="c"># Architecture drafts + dataset survey</span></pre>
+</div>
+</section>
+
+<!-- Quick Start -->
+<section id="quickstart">
+<div class="container">
+  <h2><span class="n">12</span>Quick Start</h2>
+  <p class="lead">Requires Python 3.13+, FFmpeg, and uv.</p>
+  <pre><span class="c"># Clone and install</span>
+git clone https://github.com/max-gartz/worlds1k
+cd worlds1k
+uv sync
+
+<span class="c"># List available datasets</span>
+uv run python -m worlds1k.training.pretrain <span class="f">--list-datasets</span>
+
+<span class="c"># Train on a small subset (smoke test)</span>
+uv run python -m worlds1k.training.pretrain \
+  <span class="f">--dataset</span> <span class="s">ucf101</span> \
+  <span class="f">--max-samples</span> <span class="s">8</span> \
+  <span class="f">--num-epochs</span> <span class="s">3</span> \
+  <span class="f">--eval-freq</span> <span class="s">2</span>
+
+<span class="c"># Train on Disney video clips</span>
+HF_TOKEN=hf_xxx uv run python -m worlds1k.training.pretrain \
+  <span class="f">--dataset</span> <span class="s">disney</span> \
+  <span class="f">--max-samples</span> <span class="s">500</span> \
+  <span class="f">--num-epochs</span> <span class="s">50</span> \
+  <span class="f">--output-dir</span> <span class="s">checkpoints/</span>
+
+<span class="c"># Run inference (after training)</span>
+uv run python -m worlds1k.inference \
+  <span class="f">--checkpoint</span> <span class="s">checkpoints/step_1000.pt</span> \
+  <span class="f">--input</span> <span class="s">video.pt</span> \
+  <span class="f">--mode</span> <span class="s">dream</span> \
+  <span class="f">--dream-steps</span> <span class="s">64</span>
+
+<span class="c"># Run tests</span>
+uv run pytest                        <span class="c"># unit tests (22 tests, ~2s)</span>
+uv run pytest -m integration         <span class="c"># + streaming integration tests</span></pre>
+</div>
+</section>
+
+<footer>
+<div class="container">
+  <p style="font-family:var(--font-display);font-size:1.2rem;color:var(--fg-dim);margin-bottom:.5rem">Thousand <em style="color:var(--accent)">Worlds</em></p>
+  <p>
+    <a href="https://github.com/max-gartz/worlds1k">Source</a>
+    &ensp;&middot;&ensp;
+    <a href="https://numenta.com/a-thousand-brains">Hawkins: A Thousand Brains</a>
+    &ensp;&middot;&ensp;
+    <a href="https://openreview.net/pdf?id=BZ5a1r-kVsf">LeCun: JEPA (2022)</a>
+    &ensp;&middot;&ensp;
+    MIT License
+  </p>
+</div>
+</footer>
+
+</body>
+</html>

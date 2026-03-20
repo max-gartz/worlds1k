@@ -1,0 +1,32 @@
+# Environment
+.env
+.env.local
+.env.*.local
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+checkpoints/
+
+# Claude Code (local — symlinks, specs, settings)
+.claude/
+.specs/
