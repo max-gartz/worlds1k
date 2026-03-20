@@ -3,7 +3,7 @@ name = "worlds1k"
 version = "0.1.0"
 description = "ML research project — Thousand Worlds"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "accelerate>=0.30",
     "datasets>=2.19",
