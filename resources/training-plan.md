@@ -1,6 +1,6 @@
 # Training Plan — Full-Scale Runs
 
-Concrete plan for training Thousand Worlds beyond local smoke tests.
+Concrete plan for training worlds1k beyond local smoke tests.
 
 ## Model Size Estimates
 
@@ -13,147 +13,118 @@ With default config (DINOv2-small backbone, 3 levels):
 | Level 1 (Encoder + ActionHead + Predictor) | ~4M |
 | Level 2 (Encoder + ActionHead + Predictor + TopDown) | ~2M |
 | Level 3 (Encoder + ActionHead + Predictor + TopDown) | ~1M |
-| **Total trainable** | **~7M** |
+| **Total trainable** | **~5.6M** |
 | FrameDecoder (phase 2) | ~2M |
-
-With DINOv2-base backbone and wider latents (d_latents=[512, 256, 128]):
-
-| Component | Parameters |
-|-----------|-----------|
-| DINOv2-base (frozen) | 86M (no gradients) |
-| Projection + 3 levels | ~25M |
-| **Total trainable** | **~25M** |
-
-**Recommendation:** Start with default (~7M trainable). Scale to base (~25M) once training dynamics are validated.
+| AudioDecoder (phase 2) | ~0.5M |
 
 ## GPU Options (March 2026)
 
-For this model size (~7M trainable), an **A100 is more than sufficient** and the best value. H100s are 1.5-2x faster but 2-3x more expensive per hour — not worth it at this scale.
+For ~5.6M trainable params, even an RTX 4090 or L4 (24GB) is sufficient. A100 is overkill but cheap on community clouds.
 
 | Provider | GPU | VRAM | $/GPU/hr | Notes |
 |----------|-----|------|----------|-------|
 | **Vast.ai (interruptible)** | A100 80GB | 80GB | ~$0.50 | Cheapest; needs checkpoint discipline |
-| **Vast.ai (on-demand)** | A100 40GB | 40GB | ~$0.60 | Marketplace, variable availability |
 | **Thunder Compute** | A100 80GB | 80GB | $0.78 | Budget reliable |
 | **RunPod Community** | A100 80GB | 80GB | $0.89 | No minimum, per-second billing |
-| **RunPod On-Demand** | A100 PCIe | 80GB | $1.19 | Most reliable |
-| **Lambda Labs** | A100 SXM 40GB | 40GB | $1.48 | 2-week minimum — avoid for short runs |
-| **RunPod Community** | H100 | 80GB | $1.99 | Only if you need speed |
-
-**Recommendation:** RunPod Community A100 ($0.89/hr) for initial runs. Vast.ai interruptible ($0.50/hr) for budget experiments if you save checkpoints frequently. Avoid Lambda Labs unless committing to multi-week training.
+| **RunPod Community** | RTX 4090 | 24GB | $0.35 | Sufficient for this model size |
 
 ## Training Configurations
 
-### Config A: Validation Run (1–2 hours, ~$4)
+All configs use `--max-frames` as the single training duration knob. The dataset yields infinitely from cached clips; training stops when the frame budget is reached.
 
-Verify training works on cloud with real data. Single A100/H100.
+### Config A: Validation Run (~$0.15)
 
 ```bash
-uv run python -m thousand_worlds.train.world_model \
-  --dataset disney \
-  --max-samples 200 \
-  --batch-size 4 \
-  --num-epochs 10 \
-  --eval-freq 20 \
+uv run python -m worlds1k.train.world_model \
+  --dataset disney --max-frames 50000 \
+  --batch-size 4 --eval-freq 20 \
   --output-dir checkpoints/val-run
 ```
 
-- ~200 clips × 10 epochs = 2000 steps
-- ~50 min on H100
-- Cost: ~$2
+- 50K frames / (4 x 128) = ~98 steps, ~10 min
 
-### Config B: Small Scale (8–12 hours, ~$20)
-
-Train on 1K clips for meaningful representation learning.
+### Config B: Small Scale (~$2)
 
 ```bash
-uv run python -m thousand_worlds.train.world_model \
-  --dataset disney \
-  --max-samples 1000 \
-  --batch-size 8 \
-  --num-epochs 30 \
-  --eval-freq 50 \
-  --learning-rate 3e-4 \
+uv run python -m worlds1k.train.world_model \
+  --dataset kinetics400-sample --max-frames 500000 \
+  --batch-size 8 --eval-freq 50 \
   --output-dir checkpoints/small
 ```
 
-- 1000 clips × 30 epochs / batch 8 = ~3750 steps
-- ~10 hours on H100
-- Cost: ~$20
+- 500K frames / (8 x 128) = ~488 steps, ~2 hours
 
-### Config C: Medium Scale (24–48 hours, ~$50–100)
-
-Train on multiple datasets for robust features.
+### Config C: Medium Scale (~$10)
 
 ```bash
-# Train on open-sora (high-res, diverse content)
-uv run python -m thousand_worlds.train.world_model \
-  --dataset open-sora \
-  --max-samples 5000 \
-  --batch-size 8 \
-  --num-epochs 20 \
-  --eval-freq 100 \
+uv run python -m worlds1k.train.world_model \
+  --dataset disney --max-frames 5000000 \
+  --batch-size 8 --eval-freq 100 \
   --output-dir checkpoints/medium
 ```
 
-- 5000 clips × 20 epochs / batch 8 = ~12500 steps
-- ~36 hours on H100
-- Cost: ~$70
+- 5M frames, ~12 hours on A100
 
-### Config D: Large Scale with DINOv2-base (3–5 days, ~$200–400)
-
-Wider model, more data, longer training. Requires accepting gated dataset TOS.
+### Config D: Audio+Video (EPIC-KITCHENS)
 
 ```bash
-uv run python -m thousand_worlds.train.world_model \
-  --dataset finevideo \
-  --max-samples 20000 \
-  --batch-size 8 \
-  --encoder dinov2-base \
-  --num-epochs 20 \
-  --eval-freq 200 \
-  --output-dir checkpoints/large
+uv run python -m worlds1k.train.world_model \
+  --dataset epic-kitchens --max-frames 5000000 \
+  --batch-size 4 --with-audio --max-videos 10 \
+  --output-dir checkpoints/epic-av
 ```
-
-- 20000 clips × 20 epochs / batch 8 = 50K steps
-- ~4 days on H100
-- Cost: ~$200
 
 ## Phase 2: Decoder Training
 
-After phase 1, train the frame decoder. This is lighter — the world model is frozen.
+After phase 1, train frame + audio decoders. The world model is frozen.
 
 ```bash
-# Use same dataset, runs ~2-4x faster than phase 1
-uv run python -c "
-from thousand_worlds.train.decoder import DecoderTrainer, DecodeTrainConfig
-from thousand_worlds.model.frame_decoder import FrameDecoder
-# ... load phase 1 checkpoint, create decoder, train
-"
+# Frame decoder only
+uv run python -m worlds1k.train.decoder \
+  --checkpoint checkpoints/latest.pt \
+  --dataset disney --max-frames 500000 \
+  --output-dir checkpoints/decoders
+
+# Frame + audio decoders
+uv run python -m worlds1k.train.decoder \
+  --checkpoint checkpoints/latest.pt \
+  --dataset epic-kitchens --max-frames 500000 \
+  --with-audio --output-dir checkpoints/decoders
 ```
 
-Estimate: ~25% of phase 1 time (decoder is small, frozen encoder means less compute per step).
-
-## Cloud Setup Script
+## Dreaming
 
 ```bash
-# On a fresh GPU instance (Ubuntu)
+# Video only
+uv run python -m worlds1k.inference.dream \
+  --checkpoint checkpoints/latest.pt \
+  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
+  --input video.mp4 --dream-steps 20
+
+# Video + audio (original audio on seed, Griffin-Lim on dream)
+uv run python -m worlds1k.inference.dream \
+  --checkpoint checkpoints/latest.pt \
+  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
+  --audio-decoder-checkpoint checkpoints/decoders/audio_decoder.pt \
+  --input video.mp4 --dream-steps 20
+```
+
+## Cloud Setup
+
+```bash
 sudo apt-get update && sudo apt-get install -y ffmpeg
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc
 
-git clone https://github.com/maximilian-gartz/thousand-worlds
-cd thousand-worlds
+git clone https://github.com/max-gartz/worlds1k
+cd worlds1k
+uv venv --system-site-packages
 uv sync
 
-# Set HF token for gated datasets
 export HF_TOKEN=hf_xxx
+export WANDB_API_KEY=your_key  # optional, enables wandb logging
 
-# Run training (use screen/tmux for persistence)
-screen -S train
-uv run python -m thousand_worlds.train.world_model \
-  --dataset disney --max-samples 1000 --batch-size 8 \
-  --num-epochs 30 --output-dir checkpoints/
+./scripts/train.sh disney 500000
 ```
 
 ## Estimated Total Budget
@@ -162,14 +133,10 @@ Using RunPod Community A100 at $0.89/hr:
 
 | Phase | Config | Time | Cost |
 |-------|--------|------|------|
-| Validation | Config A | 1 hr | $1 |
-| Small run | Config B | 10 hr | $9 |
-| Medium run | Config C | 36 hr | $32 |
-| Decoder (medium) | Phase 2 | 10 hr | $9 |
-| **Total (recommended path)** | | **~57 hr** | **~$51** |
+| Validation | Config A | 10 min | $0.15 |
+| Small run | Config B | 2 hr | $2 |
+| Medium run | Config C | 12 hr | $11 |
+| Decoders | Phase 2 | 3 hr | $3 |
+| **Total (recommended path)** | | **~17 hr** | **~$16** |
 
-Using Vast.ai interruptible A100 at ~$0.50/hr, the total drops to ~$29.
-
-For 10 hyperparameter experiments at Config B scale: ~$90 on RunPod, ~$50 on Vast.ai.
-
-Start with Config A to validate cloud setup, then go to Config B or C for real training. Scale to Config D only after results look promising.
+Start with Config A to validate cloud setup, then scale up.

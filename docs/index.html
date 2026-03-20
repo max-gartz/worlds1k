@@ -504,20 +504,19 @@ footer a{color:var(--fg-dim)}
   <pre>worlds1k/
   model/
     world_model.py      <span class="c"># Hierarchical predictive model</span>
-    world_layer.py      <span class="c"># Single hierarchy level (Encoder, ActionHead, Predictor, TopDown)</span>
-    frame_encoder.py    <span class="c"># DINOv2 visual encoder + VideoEncoder wrapper</span>
-    audio_encoder.py    <span class="c"># Whisper audio encoder + AudioVideoEncoder fusion</span>
-    frame_decoder.py    <span class="c"># FrameDecoder (transposed CNN, phase 2)</span>
-    encoder_base.py     <span class="c"># Abstract base classes + factory functions</span>
+    world_layer.py      <span class="c"># Single hierarchy level</span>
+    encoder_base.py     <span class="c"># Abstract base classes + factories</span>
+    frame_encoder.py    <span class="c"># DINOv2 visual encoder</span>
+    audio_encoder.py    <span class="c"># Whisper audio encoder + AudioVideoEncoder</span>
+    frame_decoder.py    <span class="c"># Frame decoder (phase 2)</span>
+    audio_decoder.py    <span class="c"># Audio decoder (phase 2, mel spectrograms)</span>
   train/
-    world_model.py      <span class="c"># Phase 1 training loop + CLI</span>
-    decoder.py          <span class="c"># Phase 2 decoder training loop</span>
+    world_model.py      <span class="c"># Phase 1: world model training + CLI</span>
+    decoder.py          <span class="c"># Phase 2: frame + audio decoder training + CLI</span>
   inference/
-    predict.py          <span class="c"># Next-state prediction from observed frames</span>
-    dream.py            <span class="c"># Autoregressive dreaming rollout</span>
-  data.py               <span class="c"># Dataset registry + streaming loader</span>
-tests/                  <span class="c"># 22 unit tests + 5 integration tests</span>
-resources/              <span class="c"># Architecture drafts + dataset survey</span></pre>
+    dream.py            <span class="c"># Dreaming (autoregressive rollout) + CLI</span>
+  data.py               <span class="c"># Dataset registry + streaming with disk cache</span>
+resources/              <span class="c"># Architecture docs + design notes</span></pre>
 </div>
 </section>
 
@@ -525,7 +524,7 @@ resources/              <span class="c"># Architecture drafts + dataset survey</
 <section id="quickstart">
 <div class="container">
   <h2><span class="n">12</span>Quick Start</h2>
-  <p class="lead">Requires Python 3.13+, FFmpeg, and uv.</p>
+  <p class="lead">Requires Python 3.11+, FFmpeg, and uv.</p>
   <pre><span class="c"># Clone and install</span>
 git clone https://github.com/max-gartz/worlds1k
 cd worlds1k
@@ -534,30 +533,25 @@ uv sync
 <span class="c"># List available datasets</span>
 uv run python -m worlds1k.train.world_model <span class="f">--list-datasets</span>
 
-<span class="c"># Train on a small subset (smoke test)</span>
+<span class="c"># Phase 1: train world model (100K frames)</span>
 uv run python -m worlds1k.train.world_model \
-  <span class="f">--dataset</span> <span class="s">ucf101</span> \
-  <span class="f">--max-samples</span> <span class="s">8</span> \
-  <span class="f">--num-epochs</span> <span class="s">3</span> \
-  <span class="f">--eval-freq</span> <span class="s">2</span>
-
-<span class="c"># Train on Disney video clips</span>
-HF_TOKEN=hf_xxx uv run python -m worlds1k.train.world_model \
   <span class="f">--dataset</span> <span class="s">disney</span> \
-  <span class="f">--max-samples</span> <span class="s">500</span> \
-  <span class="f">--num-epochs</span> <span class="s">50</span> \
+  <span class="f">--max-frames</span> <span class="s">100000</span> \
   <span class="f">--output-dir</span> <span class="s">checkpoints/</span>
 
-<span class="c"># Run inference (after training)</span>
-uv run python -m worlds1k.inference \
-  <span class="f">--checkpoint</span> <span class="s">checkpoints/step_1000.pt</span> \
-  <span class="f">--input</span> <span class="s">video.pt</span> \
-  <span class="f">--mode</span> <span class="s">dream</span> \
-  <span class="f">--dream-steps</span> <span class="s">64</span>
+<span class="c"># Phase 2: train decoders</span>
+uv run python -m worlds1k.train.decoder \
+  <span class="f">--checkpoint</span> <span class="s">checkpoints/latest.pt</span> \
+  <span class="f">--dataset</span> <span class="s">disney</span> \
+  <span class="f">--max-frames</span> <span class="s">50000</span> \
+  <span class="f">--output-dir</span> <span class="s">checkpoints/decoders</span>
 
-<span class="c"># Run tests</span>
-uv run pytest                        <span class="c"># unit tests (22 tests, ~2s)</span>
-uv run pytest -m integration         <span class="c"># + streaming integration tests</span></pre>
+<span class="c"># Dream (generates HTML with video)</span>
+uv run python -m worlds1k.inference.dream \
+  <span class="f">--checkpoint</span> <span class="s">checkpoints/latest.pt</span> \
+  <span class="f">--decoder-checkpoint</span> <span class="s">checkpoints/decoders/frame_decoder.pt</span> \
+  <span class="f">--input</span> <span class="s">video.mp4</span> \
+  <span class="f">--dream-steps</span> <span class="s">20</span></pre>
 </div>
 </section>
 

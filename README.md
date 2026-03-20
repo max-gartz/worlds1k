@@ -44,7 +44,7 @@ L = Σ_l γ_l E_t[||z - ẑ||²] + λ_s Σ_l E_t[Ω(z)] + λ_a Σ_l E_t[Ω(a)]
 
 ## Quick Start
 
-Requires Python 3.13+, [FFmpeg](https://ffmpeg.org/), and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11+, [FFmpeg](https://ffmpeg.org/), and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/max-gartz/worlds1k
@@ -58,31 +58,53 @@ uv sync
 # List available datasets
 uv run python -m worlds1k.train.world_model --list-datasets
 
-# Smoke test (streams 8 clips, trains 3 epochs)
+# Smoke test
 uv run python -m worlds1k.train.world_model \
-  --dataset ucf101 --max-samples 8 --num-epochs 3 --eval-freq 2
+  --dataset ucf101 --max-frames 5000 --eval-freq 5
 
 # Real training
 HF_TOKEN=hf_xxx uv run python -m worlds1k.train.world_model \
-  --dataset disney --max-samples 500 --num-epochs 50 --output-dir checkpoints/
+  --dataset disney --max-frames 500000 --output-dir checkpoints/
+
+# Train with audio (EPIC-KITCHENS)
+HF_TOKEN=hf_xxx uv run python -m worlds1k.train.world_model \
+  --dataset epic-kitchens --max-frames 100000 --with-audio --max-videos 1
 ```
 
-### Inference
+### Decode (Phase 2)
 
 ```bash
-# Predict next state
-uv run python -m worlds1k.inference \
-  --checkpoint checkpoints/step_1000.pt --input video.pt --mode predict
+uv run python -m worlds1k.train.decoder \
+  --checkpoint checkpoints/latest.pt --dataset disney --max-frames 50000 \
+  --output-dir checkpoints/decoders
 
-# Dream (autoregressive rollout)
-uv run python -m worlds1k.inference \
-  --checkpoint checkpoints/step_1000.pt --input video.pt --mode dream --dream-steps 64
+# With audio decoder
+uv run python -m worlds1k.train.decoder \
+  --checkpoint checkpoints/latest.pt --dataset epic-kitchens --max-frames 50000 \
+  --with-audio --output-dir checkpoints/decoders
+```
+
+### Dream
+
+```bash
+# Video only
+uv run python -m worlds1k.inference.dream \
+  --checkpoint checkpoints/latest.pt \
+  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
+  --input video.mp4 --dream-steps 20
+
+# Video + audio
+uv run python -m worlds1k.inference.dream \
+  --checkpoint checkpoints/latest.pt \
+  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
+  --audio-decoder-checkpoint checkpoints/decoders/audio_decoder.pt \
+  --input video.mp4 --dream-steps 20
 ```
 
 ### Test
 
 ```bash
-uv run pytest                    # 22 unit tests (~2s)
+uv run pytest                    # unit tests (~5s)
 uv run pytest -m integration    # + streaming integration tests
 ```
 
@@ -109,17 +131,17 @@ worlds1k/
   model/
     world_model.py      # Hierarchical predictive model
     world_layer.py      # Single hierarchy level
+    encoder_base.py     # Abstract base classes + factories
     frame_encoder.py    # DINOv2 visual encoder
-    audio_encoder.py    # Whisper audio encoder (optional)
+    audio_encoder.py    # Whisper audio encoder + AudioVideoEncoder
     frame_decoder.py    # Frame decoder (phase 2)
-    encoder_base.py     # Base classes + factories
+    audio_decoder.py    # Audio decoder (phase 2, mel spectrograms)
   train/
-    world_model.py      # Phase 1 training + CLI
-    decoder.py          # Phase 2 decoder training
+    world_model.py      # Phase 1: world model training + CLI
+    decoder.py          # Phase 2: frame + audio decoder training + CLI
   inference/
-    predict.py          # Next-state prediction
-    dream.py            # Autoregressive dreaming
-  data.py               # Dataset registry + streaming
+    dream.py            # Dreaming (autoregressive rollout) + CLI
+  data.py               # Dataset registry + streaming with disk cache
 ```
 
 ## Background
