@@ -1,10 +1,10 @@
-"""Phase 2: train pixel and/or audio decoders with frozen encoder.
+"""Phase 2: train frame and/or audio decoders with frozen encoder.
 
 After the hierarchical predictive model is trained (phase 1), this module
 trains decoders to map latent states back to observations. The world model
 and encoder are frozen so latent representations remain stable.
 
-- :class:`PixelDecoderTrainer` — latent → pixel frames (MSE loss)
+- :class:`FrameDecoderTrainer` — latent → pixel frames (MSE loss)
 - :class:`AudioDecoderTrainer` — latent → mel spectrograms (MSE loss)
 """
 
@@ -47,8 +47,8 @@ def _encode_batch(encoder: nn.Module, batch: tuple[torch.Tensor, ...]) -> torch.
     return encoder(batch[0], batch[1])
 
 
-class PixelDecoderTrainer:
-    """Phase 2: train pixel decoder (latent → frames) with everything else frozen."""
+class FrameDecoderTrainer:
+    """Phase 2: train frame decoder (latent → frames) with everything else frozen."""
 
     def __init__(
         self,

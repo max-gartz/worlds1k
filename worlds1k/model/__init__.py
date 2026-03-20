@@ -1,7 +1,7 @@
 """Model architecture components for the hierarchical predictive world model."""
 
 from worlds1k.model.audio_encoder import AudioEncoder, AudioVideoEncoder
-from worlds1k.model.decoder import PixelDecoder
+from worlds1k.model.decoder import FrameDecoder
 from worlds1k.model.encoders import (
     BaseAudioEncoder,
     BaseFrameEncoder,
@@ -23,7 +23,7 @@ __all__ = [
     "BaseMultimodalEncoder",
     "Encoder",
     "FrameEncoder",
-    "PixelDecoder",
+    "FrameDecoder",
     "Predictor",
     "TopDownDecoder",
     "VideoEncoder",

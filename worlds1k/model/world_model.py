@@ -74,7 +74,7 @@ class WorldModelConfig:
         Output dimensionality of the audio projection head (default 256).
         Only used when ``audio_backbone_name`` is not ``None``.
     image_size : int
-        Output image size for the pixel decoder.
+        Output image size for the frame decoder.
     image_channels : int
         Number of image channels (e.g. 3 for RGB).
     """

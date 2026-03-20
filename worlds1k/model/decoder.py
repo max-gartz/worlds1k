@@ -1,4 +1,4 @@
-"""Pixel decoder — maps level-1 latents back to pixel space.
+"""Frame decoder — maps level-1 latents back to pixel space.
 
 This module is separate from the predictive hierarchy and is trained
 in phase 2 with the encoder frozen.  It exists purely to visualize
@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 
 
-class PixelDecoder(nn.Module):
+class FrameDecoder(nn.Module):
     """Decode level-1 latent states z^(1) back to pixel frames.
 
     Trained *after* the hierarchical predictive model (phase 2) with

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from worlds1k.model.decoder import PixelDecoder
+    from worlds1k.model.decoder import FrameDecoder
     from worlds1k.model.world_model import WorldModel
 
 
@@ -38,7 +38,7 @@ class Dreamer:
     def __init__(
         self,
         model: WorldModel,
-        decoder: PixelDecoder | None = None,
+        decoder: FrameDecoder | None = None,
         audio_decoder: Any | None = None,
     ) -> None:
         self.model = model
@@ -157,7 +157,7 @@ p {{ color:#8a8880; font-size:.9rem }} video {{ border:1px solid #252630; border
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="worlds1k.inference.dream", description="Dream from a trained world model.")
     p.add_argument("--checkpoint", type=Path, required=True, help="World model checkpoint.")
-    p.add_argument("--decoder-checkpoint", type=Path, default=None, help="Pixel decoder checkpoint.")
+    p.add_argument("--decoder-checkpoint", type=Path, default=None, help="Frame decoder checkpoint.")
     p.add_argument("--audio-decoder-checkpoint", type=Path, default=None, help="Audio decoder checkpoint.")
     p.add_argument("--dataset", type=str, default="ucf101", help="Dataset for seed video.")
     p.add_argument("--max-videos", type=int, default=1)
@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> None:
     import os
 
     from worlds1k.data import StreamingVideoDataset
-    from worlds1k.model.decoder import PixelDecoder
+    from worlds1k.model.decoder import FrameDecoder
     from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
     device = torch.device(
@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> None:
 
     decoder = None
     if args.decoder_checkpoint:
-        decoder = PixelDecoder(config.d_latents[0], frame_height=args.image_size, frame_width=args.image_size).to(
+        decoder = FrameDecoder(config.d_latents[0], frame_height=args.image_size, frame_width=args.image_size).to(
             device
         )
         dec_ckpt = torch.load(args.decoder_checkpoint, map_location="cpu", weights_only=True)

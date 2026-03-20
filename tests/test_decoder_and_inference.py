@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from worlds1k.data import SyntheticVideoDataset
-from worlds1k.model.decoder import PixelDecoder
+from worlds1k.model.decoder import FrameDecoder
 from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
 
@@ -35,9 +35,9 @@ class _FlatEncoder(torch.nn.Module):
         return self.proj(video.reshape(b, t, -1))
 
 
-class TestPixelDecoder:
+class TestFrameDecoder:
     def test_forward_shape(self):
-        dec = PixelDecoder(16, frame_height=16, frame_width=16)
+        dec = FrameDecoder(16, frame_height=16, frame_width=16)
         z = torch.randn(2, 16)
         out = dec(z)
         assert out.shape == (2, 3, 16, 16)
@@ -45,7 +45,7 @@ class TestPixelDecoder:
         assert out.max() <= 1.0
 
     def test_decoder_training(self):
-        from worlds1k.training.decode import PixelDecoderTrainer, DecodeTrainConfig
+        from worlds1k.training.decode import FrameDecoderTrainer, DecodeTrainConfig
 
         config = _small_config()
         model = WorldModel.from_config(config)
@@ -55,9 +55,9 @@ class TestPixelDecoder:
         ds = SyntheticVideoDataset(window_size=8, image_size=16)
         loader = DataLoader(ds, batch_size=2)
 
-        decoder = PixelDecoder(config.d_latents[0], frame_height=16, frame_width=16)
+        decoder = FrameDecoder(config.d_latents[0], frame_height=16, frame_width=16)
 
-        trainer = PixelDecoderTrainer(
+        trainer = FrameDecoderTrainer(
             model,
             encoder,
             decoder,
@@ -87,7 +87,7 @@ class TestDreamer:
 
         config = _small_config()
         model = WorldModel.from_config(config)
-        decoder = PixelDecoder(config.d_latents[0], frame_height=16, frame_width=16)
+        decoder = FrameDecoder(config.d_latents[0], frame_height=16, frame_width=16)
 
         dreamer = Dreamer(model, decoder)
         result = dreamer.dream(torch.randn(1, 8, 32), num_steps=3)

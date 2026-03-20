@@ -14,7 +14,7 @@ With default config (DINOv2-small backbone, 3 levels):
 | Level 2 (Encoder + ActionHead + Predictor + TopDown) | ~2M |
 | Level 3 (Encoder + ActionHead + Predictor + TopDown) | ~1M |
 | **Total trainable** | **~7M** |
-| PixelDecoder (phase 2) | ~2M |
+| FrameDecoder (phase 2) | ~2M |
 
 With DINOv2-base backbone and wider latents (d_latents=[512, 256, 128]):
 
@@ -121,13 +121,13 @@ uv run python -m thousand_worlds.training.pretrain \
 
 ## Phase 2: Decoder Training
 
-After phase 1, train the pixel decoder. This is lighter — the world model is frozen.
+After phase 1, train the frame decoder. This is lighter — the world model is frozen.
 
 ```bash
 # Use same dataset, runs ~2-4x faster than phase 1
 uv run python -c "
 from thousand_worlds.training.decode import DecoderTrainer, DecodeTrainConfig
-from thousand_worlds.model.decoder import PixelDecoder
+from thousand_worlds.model.decoder import FrameDecoder
 # ... load phase 1 checkpoint, create decoder, train
 "
 ```

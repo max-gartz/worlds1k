@@ -111,7 +111,7 @@ worlds1k/
     world_layer.py      # Single hierarchy level
     frame_encoder.py    # DINOv2 visual encoder
     audio_encoder.py    # Whisper audio encoder (optional)
-    decoder.py          # Pixel decoder (phase 2)
+    decoder.py          # Frame decoder (phase 2)
     encoders.py         # Base classes + factories
   training/
     pretrain.py         # Phase 1 training + CLI

@@ -29,7 +29,7 @@ At each timestep, the temporal model advances the world state. The spatial decod
 
 ## Why This Might Work
 
-The pixel decoder already proves that level-1 latents contain enough information to reconstruct frames. A 3D-aware decoder trained on the same latents — especially from egocentric/multi-view video where viewpoint variation is in the training data — could reconstruct scenes rather than flat images.
+The frame decoder already proves that level-1 latents contain enough information to reconstruct frames. A 3D-aware decoder trained on the same latents — especially from egocentric/multi-view video where viewpoint variation is in the training data — could reconstruct scenes rather than flat images.
 
 The key is that the world model's latent space doesn't just encode "what the frame looks like" (that would be an image autoencoder). It encodes "what's happening in the world" — object positions, states, dynamics. That's closer to a scene representation than a frame representation, even though it was trained on 2D video.
 
