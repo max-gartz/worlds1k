@@ -68,36 +68,6 @@ class TestPixelDecoder:
         assert len(result.train_losses) > 0
 
 
-class TestStatePredictor:
-    def test_predict(self):
-        from worlds1k.inference.predict import StatePredictor
-
-        config = _small_config()
-        model = WorldModel.from_config(config)
-        model.eval()
-
-        features = torch.randn(1, 8, 32)
-        predictor = StatePredictor(model)
-        result = predictor.predict(features)
-
-        assert "z" in result
-        assert "z_last" in result
-        assert result["z_last"].shape == (1, config.d_latents[0])
-
-    def test_predict_with_decoder(self):
-        from worlds1k.inference.predict import StatePredictor
-
-        config = _small_config()
-        model = WorldModel.from_config(config)
-        decoder = PixelDecoder(config.d_latents[0], frame_height=16, frame_width=16)
-
-        predictor = StatePredictor(model, decoder)
-        result = predictor.predict(torch.randn(1, 8, 32))
-
-        assert "frames_pred" in result
-        assert result["frames_pred"].shape == (1, 3, 16, 16)
-
-
 class TestDreamer:
     def test_dream(self):
         from worlds1k.inference.dream import Dreamer

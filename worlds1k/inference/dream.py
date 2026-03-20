@@ -3,10 +3,22 @@
 Starting from encoded initial frames, autoregressively roll out the
 world model's predictions without new observations.  The model
 "dreams" forward in time using only its own predictions as input.
+
+Run directly::
+
+    uv run python -m worlds1k.inference.dream \\
+        --checkpoint checkpoints/world_model.pt \\
+        --decoder-checkpoint checkpoints/decoder.pt \\
+        --dataset epic-kitchens --dream-steps 30 \\
+        --output dream_demo.html
 """
 
 from __future__ import annotations
 
+import argparse
+import base64
+import io
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -21,13 +33,6 @@ class Dreamer:
 
     Feeds the model's own predictions back as input to produce an
     extended imagined trajectory.
-
-    Parameters
-    ----------
-    model : WorldModel
-        Trained hierarchical world model (should be in eval mode).
-    decoder : PixelDecoder or None
-        Optional pixel decoder for visualizing dreamed frames.
     """
 
     def __init__(self, model: WorldModel, decoder: PixelDecoder | None = None) -> None:
@@ -35,11 +40,7 @@ class Dreamer:
         self.decoder = decoder
 
     @torch.no_grad()
-    def dream(
-        self,
-        seed_features: torch.Tensor,
-        num_steps: int,
-    ) -> dict[str, torch.Tensor]:
+    def dream(self, seed_features: torch.Tensor, num_steps: int) -> dict[str, torch.Tensor]:
         """Roll out predictions autoregressively from seed features.
 
         Parameters
@@ -52,41 +53,31 @@ class Dreamer:
         Returns
         -------
         dict[str, torch.Tensor]
-            ``"z_trajectory"`` — dreamed level-0 latents, shape
-            ``(B, num_steps, d_latent)``.
-            ``"frames_trajectory"`` — dreamed pixel frames, shape
-            ``(B, num_steps, C, H, W)`` (only if decoder is available).
+            ``"z_trajectory"`` — dreamed level-0 latents.
+            ``"frames_trajectory"`` — dreamed pixel frames (if decoder).
         """
         self.model.eval()
         device = seed_features.device
 
-        # Initial encoding — run the full model on seed features
         outputs = self.model(seed_features)
-        z_level0 = outputs["z"][0]  # (B, N, d_latent)
+        z_level0 = outputs["z"][0]
         level0 = self.model.levels[0]
 
-        # Start dreaming from the last encoded latent
-        z_curr = z_level0[:, -1, :]  # (B, d_latent)
+        z_curr = z_level0[:, -1, :]
         trajectory: list[torch.Tensor] = [z_curr]
 
-        # Infer the "action style" from the last transition to bootstrap
         if z_level0.size(1) >= 2:
-            z_prev = z_level0[:, -2, :]
-            action = level0.action_head(z_prev, z_curr)
+            action = level0.action_head(z_level0[:, -2, :], z_curr)
         else:
             action = torch.zeros(z_curr.size(0), level0.d_action, device=device)
 
         for _ in range(num_steps):
-            # Predict next latent using current state + action (no top-down context)
             z_next = level0.predictor(z_curr, action, context=None)
             trajectory.append(z_next)
-
-            # Infer action for the next step
             action = level0.action_head(z_curr, z_next)
             z_curr = z_next
 
-        z_traj = torch.stack(trajectory, dim=1)  # (B, num_steps+1, d_latent)
-
+        z_traj = torch.stack(trajectory, dim=1)
         result: dict[str, torch.Tensor] = {"z_trajectory": z_traj}
 
         if self.decoder is not None:
@@ -95,3 +86,133 @@ class Dreamer:
             result["frames_trajectory"] = frames.view(b, t, *frames.shape[1:])
 
         return result
+
+
+def _frames_to_mp4_b64(frames: torch.Tensor, fps: int = 10) -> str:
+    """(T, C, H, W) float [0,1] → base64 mp4 data URI."""
+    import av
+    from PIL import Image
+
+    buf = io.BytesIO()
+    container = av.open(buf, mode="w", format="mp4")
+    stream = container.add_stream("h264", rate=fps)
+    h, w = frames.shape[2], frames.shape[3]
+    scale = max(1, 256 // h)
+    stream.width = w * scale
+    stream.height = h * scale
+    stream.pix_fmt = "yuv420p"
+
+    for i in range(frames.size(0)):
+        img = (frames[i].clamp(0, 1) * 255).byte().permute(1, 2, 0).numpy()
+        pil = Image.fromarray(img).resize((w * scale, h * scale), Image.NEAREST)
+        frame = av.VideoFrame.from_image(pil)
+        for packet in stream.encode(frame):
+            container.mux(packet)
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+    return f"data:video/mp4;base64,{base64.b64encode(buf.getvalue()).decode()}"
+
+
+def _render_html(seed: torch.Tensor, dream: torch.Tensor, out: Path) -> None:
+    seed_vid = _frames_to_mp4_b64(seed, fps=25)
+    dream_vid = _frames_to_mp4_b64(dream, fps=5)
+    html = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Thousand Worlds — Dream</title>
+<style>
+body {{ background:#0a0b0f; color:#e2e0dc; font-family:Georgia,serif; padding:2rem; max-width:900px; margin:0 auto }}
+h1 {{ font-size:2rem; font-weight:normal }} h1 em {{ color:#c4a05c; font-style:italic }}
+h2 {{ font-size:1rem; color:#c4a05c; font-family:monospace; margin:2rem 0 .5rem }}
+p {{ color:#8a8880; font-size:.9rem }} video {{ border:1px solid #252630; border-radius:6px }}
+.row {{ display:flex; gap:2rem; margin:1rem 0 }}
+.stats {{ font-family:monospace; font-size:.8rem; color:#5a5850; margin-top:2rem }}
+.stats td {{ padding:.2rem 1rem .2rem 0 }}
+</style></head><body>
+<h1>Thousand <em>Worlds</em></h1>
+<h2>Seed Video (ground truth)</h2>
+<p>{seed.shape[0]} frames at {seed.shape[2]}x{seed.shape[3]}</p>
+<div class="row"><video width="384" height="384" controls autoplay loop muted>
+<source src="{seed_vid}" type="video/mp4"></video></div>
+<h2>Dream Sequence</h2>
+<p>{dream.shape[0]} steps — autoregressive rollout, no sensory input after seed.</p>
+<div class="row"><video width="384" height="384" controls autoplay loop muted>
+<source src="{dream_vid}" type="video/mp4"></video></div>
+<table class="stats"><tr><td>seed frames</td><td>{seed.shape[0]}</td></tr>
+<tr><td>dream steps</td><td>{dream.shape[0]}</td></tr>
+<tr><td>resolution</td><td>{seed.shape[2]}x{seed.shape[3]}</td></tr></table>
+</body></html>"""
+    out.write_text(html)
+    print(f"demo written to {out}")  # noqa: T201
+
+
+def main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(prog="worlds1k.inference.dream", description="Dream from a trained world model.")
+    p.add_argument("--checkpoint", type=Path, required=True, help="World model checkpoint.")
+    p.add_argument("--decoder-checkpoint", type=Path, default=None, help="Pixel decoder checkpoint.")
+    p.add_argument("--dataset", type=str, default="ucf101", help="Dataset for seed video.")
+    p.add_argument("--max-videos", type=int, default=1)
+    p.add_argument("--window-size", type=int, default=128)
+    p.add_argument("--image-size", type=int, default=64)
+    p.add_argument("--dream-steps", type=int, default=20)
+    p.add_argument("--output", type=Path, default=Path("dream.html"))
+    args = p.parse_args(argv)
+
+    import os
+
+    from worlds1k.data import StreamingVideoDataset
+    from worlds1k.model.decoder import PixelDecoder
+    from worlds1k.model.encoders import build_frame_encoder
+    from worlds1k.model.frame_encoder import VideoEncoder
+    from worlds1k.model.world_model import WorldModel, WorldModelConfig
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    config = WorldModelConfig(image_size=args.image_size)
+    model = WorldModel.from_config(config).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+
+    encoder = VideoEncoder(build_frame_encoder(config)).to(device)
+    encoder.load_state_dict(ckpt["encoder"])
+    encoder.eval()
+
+    decoder = None
+    if args.decoder_checkpoint:
+        decoder = PixelDecoder(config.d_latents[0], frame_height=args.image_size, frame_width=args.image_size).to(
+            device
+        )
+        dec_ckpt = torch.load(args.decoder_checkpoint, map_location="cpu", weights_only=True)
+        decoder.load_state_dict(dec_ckpt["decoder"])
+        decoder.eval()
+
+    ds = StreamingVideoDataset(
+        args.dataset,
+        max_videos=args.max_videos,
+        window_size=args.window_size,
+        image_size=args.image_size,
+        token=os.environ.get("HF_TOKEN"),
+    )
+    seed_video = next(iter(ds))[0].unsqueeze(0).to(device)
+    print(f"seed: {seed_video.shape}")  # noqa: T201
+
+    with torch.no_grad():
+        features = encoder(seed_video)
+
+    dreamer = Dreamer(model, decoder)
+    result = dreamer.dream(features, num_steps=args.dream_steps)
+    print(f"dream: {result['z_trajectory'].shape}")  # noqa: T201
+
+    if decoder and "frames_trajectory" in result:
+        _render_html(seed_video.squeeze(0).cpu(), result["frames_trajectory"].squeeze(0).cpu(), args.output)
+    else:
+        torch.save(
+            {k: v.cpu() for k, v in result.items() if isinstance(v, torch.Tensor)}, args.output.with_suffix(".pt")
+        )
+        print(f"saved latents to {args.output.with_suffix('.pt')}")  # noqa: T201
+
+
+if __name__ == "__main__":
+    main()
