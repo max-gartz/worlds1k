@@ -60,7 +60,7 @@ class TestWorldModelForward:
 
 class TestPretrainer:
     def test_train_video_only(self):
-        from worlds1k.training.pretrain import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import PretrainConfig, Pretrainer
 
         config = _small_config()
         model = WorldModel.from_config(config)
@@ -86,7 +86,7 @@ class TestPretrainer:
         assert len(result.train_losses) > 0
 
     def test_train_audio_video(self):
-        from worlds1k.training.pretrain import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import PretrainConfig, Pretrainer
 
         d_input = 48
         config = _small_config(d_input=d_input)
@@ -116,7 +116,7 @@ class TestPretrainer:
 
     def test_stops_at_max_frames(self):
         """Training stops even if max_frames is not a multiple of frames_per_step."""
-        from worlds1k.training.pretrain import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import PretrainConfig, Pretrainer
 
         config = _small_config()
         model = WorldModel.from_config(config)
@@ -143,14 +143,14 @@ class TestPretrainer:
 
 class TestCLI:
     def test_parse_dataset(self):
-        from worlds1k.training.pretrain import parse_args
+        from worlds1k.train.world_model import parse_args
 
         args = parse_args(["--dataset", "ucf101", "--max-frames", "10000"])
         assert args.dataset == "ucf101"
         assert args.max_frames == 10000
 
     def test_parse_defaults(self):
-        from worlds1k.training.pretrain import parse_args
+        from worlds1k.train.world_model import parse_args
 
         args = parse_args(["--dataset", "disney"])
         assert args.window_size == 128
@@ -159,7 +159,7 @@ class TestCLI:
         assert args.max_frames == 100_000
 
     def test_list_datasets_flag(self):
-        from worlds1k.training.pretrain import parse_args
+        from worlds1k.train.world_model import parse_args
 
         args = parse_args(["--list-datasets"])
         assert args.list_datasets is True
@@ -169,9 +169,9 @@ class TestCLI:
 class TestFullPipeline:
     def test_end_to_end_with_streaming(self):
         from worlds1k.data import StreamingVideoDataset
-        from worlds1k.model.encoders import build_frame_encoder
+        from worlds1k.model.encoder_base import build_frame_encoder
         from worlds1k.model.frame_encoder import VideoEncoder
-        from worlds1k.training.pretrain import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import PretrainConfig, Pretrainer
 
         config = WorldModelConfig(num_levels=3, image_size=64)
         model = WorldModel.from_config(config)

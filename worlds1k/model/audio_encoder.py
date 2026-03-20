@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 from transformers import WhisperModel
 
-from worlds1k.model.encoders import (
+from worlds1k.model.encoder_base import (
     BaseAudioEncoder,
     BaseFrameEncoder,
     BaseMultimodalEncoder,

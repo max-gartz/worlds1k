@@ -10,8 +10,10 @@ and encoder are frozen so latent representations remain stable.
 
 from __future__ import annotations
 
+import argparse
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -204,3 +206,88 @@ class AudioDecoderTrainer:
         if running_n > 0:
             result.train_losses.append(running_loss / running_n)
         return result
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="worlds1k.train.decoder", description="Train frame/audio decoders (phase 2).")
+    p.add_argument("--checkpoint", type=Path, required=True, help="World model checkpoint from phase 1.")
+    p.add_argument("--dataset", type=str, required=True, help="Dataset name or HuggingFace path.")
+    p.add_argument("--max-frames", type=int, default=100_000)
+    p.add_argument("--max-videos", type=int, default=None)
+    p.add_argument("--window-size", type=int, default=128)
+    p.add_argument("--batch-size", type=int, default=4)
+    p.add_argument("--image-size", type=int, default=64)
+    p.add_argument("--learning-rate", type=float, default=1e-3)
+    p.add_argument("--eval-freq", type=int, default=50)
+    p.add_argument("--with-audio", action="store_true", help="Also train audio decoder.")
+    p.add_argument("--encoder", type=str, default="dinov2-small")
+    p.add_argument("--output-dir", type=Path, required=True)
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    import os
+
+    from worlds1k.data import StreamingVideoDataset
+    from worlds1k.model.frame_decoder import FrameDecoder
+    from worlds1k.model.world_model import WorldModel, WorldModelConfig
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    print(f"device: {device}")  # noqa: T201
+
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+
+    if args.with_audio:
+        from worlds1k.model.audio_encoder import AudioVideoEncoder
+
+        config = WorldModelConfig(image_size=args.image_size, d_input=512 + 256)
+        model = WorldModel.from_config(config).to(device)
+        model.load_state_dict(ckpt["model"])
+        encoder = AudioVideoEncoder.from_pretrained(args.encoder, 512, "whisper-tiny", 256).to(device)
+        encoder.load_state_dict(ckpt["encoder"])
+    else:
+        from worlds1k.model.encoder_base import build_frame_encoder
+        from worlds1k.model.frame_encoder import VideoEncoder
+
+        config = WorldModelConfig(image_size=args.image_size, backbone_name=args.encoder)
+        model = WorldModel.from_config(config).to(device)
+        model.load_state_dict(ckpt["model"])
+        encoder = VideoEncoder(build_frame_encoder(config)).to(device)
+        encoder.load_state_dict(ckpt["encoder"])
+
+    from torch.utils.data import DataLoader
+
+    ds = StreamingVideoDataset(
+        args.dataset,
+        window_size=args.window_size,
+        image_size=args.image_size,
+        with_audio=args.with_audio,
+        max_videos=args.max_videos,
+        token=os.environ.get("HF_TOKEN"),
+    )
+    loader = DataLoader(ds, batch_size=args.batch_size)
+    cfg = DecodeTrainConfig(max_frames=args.max_frames, learning_rate=args.learning_rate, eval_freq=args.eval_freq)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    print("training frame decoder...")  # noqa: T201
+    frame_dec = FrameDecoder(config.d_latents[0], frame_height=args.image_size, frame_width=args.image_size).to(device)
+    fr = FrameDecoderTrainer(model, encoder, frame_dec, loader, config=cfg).train()
+    torch.save({"decoder": frame_dec.state_dict()}, args.output_dir / "frame_decoder.pt")
+    print(f"frame decoder done. loss: {fr.train_losses[-1]:.6f}")  # noqa: T201
+
+    if args.with_audio:
+        from worlds1k.model.audio_decoder import AudioDecoder
+
+        print("training audio decoder...")  # noqa: T201
+        audio_dec = AudioDecoder(config.d_latents[0]).to(device)
+        ar = AudioDecoderTrainer(model, encoder, audio_dec, loader, config=cfg).train()
+        torch.save({"audio_decoder": audio_dec.state_dict()}, args.output_dir / "audio_decoder.pt")
+        print(f"audio decoder done. loss: {ar.train_losses[-1]:.6f}")  # noqa: T201
+
+
+if __name__ == "__main__":
+    main()

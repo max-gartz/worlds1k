@@ -56,14 +56,14 @@ uv sync
 
 ```bash
 # List available datasets
-uv run python -m worlds1k.training.pretrain --list-datasets
+uv run python -m worlds1k.train.world_model --list-datasets
 
 # Smoke test (streams 8 clips, trains 3 epochs)
-uv run python -m worlds1k.training.pretrain \
+uv run python -m worlds1k.train.world_model \
   --dataset ucf101 --max-samples 8 --num-epochs 3 --eval-freq 2
 
 # Real training
-HF_TOKEN=hf_xxx uv run python -m worlds1k.training.pretrain \
+HF_TOKEN=hf_xxx uv run python -m worlds1k.train.world_model \
   --dataset disney --max-samples 500 --num-epochs 50 --output-dir checkpoints/
 ```
 
@@ -111,11 +111,11 @@ worlds1k/
     world_layer.py      # Single hierarchy level
     frame_encoder.py    # DINOv2 visual encoder
     audio_encoder.py    # Whisper audio encoder (optional)
-    decoder.py          # Frame decoder (phase 2)
-    encoders.py         # Base classes + factories
-  training/
-    pretrain.py         # Phase 1 training + CLI
-    decode.py           # Phase 2 decoder training
+    frame_decoder.py    # Frame decoder (phase 2)
+    encoder_base.py     # Base classes + factories
+  train/
+    world_model.py      # Phase 1 training + CLI
+    decoder.py          # Phase 2 decoder training
   inference/
     predict.py          # Next-state prediction
     dream.py            # Autoregressive dreaming

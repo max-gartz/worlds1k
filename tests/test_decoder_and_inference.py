@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from worlds1k.data import SyntheticVideoDataset
-from worlds1k.model.decoder import FrameDecoder
+from worlds1k.model.frame_decoder import FrameDecoder
 from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
 
@@ -45,7 +45,7 @@ class TestFrameDecoder:
         assert out.max() <= 1.0
 
     def test_decoder_training(self):
-        from worlds1k.training.decode import FrameDecoderTrainer, DecodeTrainConfig
+        from worlds1k.train.decoder import DecodeTrainConfig, FrameDecoderTrainer
 
         config = _small_config()
         model = WorldModel.from_config(config)

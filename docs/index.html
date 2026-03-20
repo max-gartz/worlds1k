@@ -507,11 +507,11 @@ footer a{color:var(--fg-dim)}
     world_layer.py      <span class="c"># Single hierarchy level (Encoder, ActionHead, Predictor, TopDown)</span>
     frame_encoder.py    <span class="c"># DINOv2 visual encoder + VideoEncoder wrapper</span>
     audio_encoder.py    <span class="c"># Whisper audio encoder + AudioVideoEncoder fusion</span>
-    decoder.py          <span class="c"># FrameDecoder (transposed CNN, phase 2)</span>
-    encoders.py         <span class="c"># Abstract base classes + factory functions</span>
-  training/
-    pretrain.py         <span class="c"># Phase 1 training loop + CLI</span>
-    decode.py           <span class="c"># Phase 2 decoder training loop</span>
+    frame_decoder.py    <span class="c"># FrameDecoder (transposed CNN, phase 2)</span>
+    encoder_base.py     <span class="c"># Abstract base classes + factory functions</span>
+  train/
+    world_model.py      <span class="c"># Phase 1 training loop + CLI</span>
+    decoder.py          <span class="c"># Phase 2 decoder training loop</span>
   inference/
     predict.py          <span class="c"># Next-state prediction from observed frames</span>
     dream.py            <span class="c"># Autoregressive dreaming rollout</span>
@@ -532,17 +532,17 @@ cd worlds1k
 uv sync
 
 <span class="c"># List available datasets</span>
-uv run python -m worlds1k.training.pretrain <span class="f">--list-datasets</span>
+uv run python -m worlds1k.train.world_model <span class="f">--list-datasets</span>
 
 <span class="c"># Train on a small subset (smoke test)</span>
-uv run python -m worlds1k.training.pretrain \
+uv run python -m worlds1k.train.world_model \
   <span class="f">--dataset</span> <span class="s">ucf101</span> \
   <span class="f">--max-samples</span> <span class="s">8</span> \
   <span class="f">--num-epochs</span> <span class="s">3</span> \
   <span class="f">--eval-freq</span> <span class="s">2</span>
 
 <span class="c"># Train on Disney video clips</span>
-HF_TOKEN=hf_xxx uv run python -m worlds1k.training.pretrain \
+HF_TOKEN=hf_xxx uv run python -m worlds1k.train.world_model \
   <span class="f">--dataset</span> <span class="s">disney</span> \
   <span class="f">--max-samples</span> <span class="s">500</span> \
   <span class="f">--num-epochs</span> <span class="s">50</span> \

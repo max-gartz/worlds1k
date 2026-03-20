@@ -2,9 +2,9 @@
 
 Run directly::
 
-    uv run python -m worlds1k.training.pretrain --dataset ucf101 --max-samples 8
-    uv run python -m worlds1k.training.pretrain --dataset disney --max-samples 500 --num-epochs 50
-    uv run python -m worlds1k.training.pretrain --list-datasets
+    uv run python -m worlds1k.train.world_model --dataset ucf101 --max-samples 8
+    uv run python -m worlds1k.train.world_model --dataset disney --max-samples 500 --num-epochs 50
+    uv run python -m worlds1k.train.world_model --list-datasets
 """
 
 from __future__ import annotations
@@ -255,7 +255,7 @@ class Pretrainer:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="worlds1k.training.pretrain", description="Train the world model.")
+    p = argparse.ArgumentParser(prog="worlds1k.train.world_model", description="Train the world model.")
 
     p.add_argument("--dataset", type=str, default=None, help="Registry name or HuggingFace path.")
     p.add_argument("--list-datasets", action="store_true", help="Print available datasets and exit.")
@@ -311,7 +311,7 @@ def main(argv: list[str] | None = None) -> None:
         encoder = AudioVideoEncoder.from_pretrained(args.encoder, 512, "whisper-tiny", 256)
         mode = f"{args.encoder} + whisper-tiny"
     else:
-        from worlds1k.model.encoders import build_frame_encoder
+        from worlds1k.model.encoder_base import build_frame_encoder
         from worlds1k.model.frame_encoder import VideoEncoder
 
         config = WorldModelConfig(num_levels=args.num_levels, backbone_name=args.encoder, image_size=args.image_size)

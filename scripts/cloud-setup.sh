@@ -33,7 +33,7 @@ print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB' i
 
 nvidia-smi
 
-uv run python -m worlds1k.training.pretrain --list-datasets
+uv run python -m worlds1k.train.world_model --list-datasets
 
 echo ""
 echo "=== Ready! ==="
@@ -43,6 +43,6 @@ echo "  export HF_TOKEN=hf_xxx"
 echo ""
 echo "Then run training:"
 echo "  cd worlds1k"
-echo "  uv run python -m worlds1k.training.pretrain \\"
+echo "  uv run python -m worlds1k.train.world_model \\"
 echo "    --dataset disney --max-samples 500 --batch-size 8 \\"
 echo "    --num-epochs 50 --eval-freq 50 --output-dir checkpoints/"

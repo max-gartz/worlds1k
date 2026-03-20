@@ -49,7 +49,7 @@ For this model size (~7M trainable), an **A100 is more than sufficient** and the
 Verify training works on cloud with real data. Single A100/H100.
 
 ```bash
-uv run python -m thousand_worlds.training.pretrain \
+uv run python -m thousand_worlds.train.world_model \
   --dataset disney \
   --max-samples 200 \
   --batch-size 4 \
@@ -67,7 +67,7 @@ uv run python -m thousand_worlds.training.pretrain \
 Train on 1K clips for meaningful representation learning.
 
 ```bash
-uv run python -m thousand_worlds.training.pretrain \
+uv run python -m thousand_worlds.train.world_model \
   --dataset disney \
   --max-samples 1000 \
   --batch-size 8 \
@@ -87,7 +87,7 @@ Train on multiple datasets for robust features.
 
 ```bash
 # Train on open-sora (high-res, diverse content)
-uv run python -m thousand_worlds.training.pretrain \
+uv run python -m thousand_worlds.train.world_model \
   --dataset open-sora \
   --max-samples 5000 \
   --batch-size 8 \
@@ -105,7 +105,7 @@ uv run python -m thousand_worlds.training.pretrain \
 Wider model, more data, longer training. Requires accepting gated dataset TOS.
 
 ```bash
-uv run python -m thousand_worlds.training.pretrain \
+uv run python -m thousand_worlds.train.world_model \
   --dataset finevideo \
   --max-samples 20000 \
   --batch-size 8 \
@@ -126,8 +126,8 @@ After phase 1, train the frame decoder. This is lighter — the world model is f
 ```bash
 # Use same dataset, runs ~2-4x faster than phase 1
 uv run python -c "
-from thousand_worlds.training.decode import DecoderTrainer, DecodeTrainConfig
-from thousand_worlds.model.decoder import FrameDecoder
+from thousand_worlds.train.decoder import DecoderTrainer, DecodeTrainConfig
+from thousand_worlds.model.frame_decoder import FrameDecoder
 # ... load phase 1 checkpoint, create decoder, train
 "
 ```
@@ -151,7 +151,7 @@ export HF_TOKEN=hf_xxx
 
 # Run training (use screen/tmux for persistence)
 screen -S train
-uv run python -m thousand_worlds.training.pretrain \
+uv run python -m thousand_worlds.train.world_model \
   --dataset disney --max-samples 1000 --batch-size 8 \
   --num-epochs 30 --output-dir checkpoints/
 ```

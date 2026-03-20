@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel
 
-from worlds1k.model.encoders import BaseFrameEncoder
+from worlds1k.model.encoder_base import BaseFrameEncoder
 
 # ImageNet channel-wise statistics used by DINOv2 preprocessing.
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)

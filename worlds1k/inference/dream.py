@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from worlds1k.model.decoder import FrameDecoder
+    from worlds1k.model.frame_decoder import FrameDecoder
     from worlds1k.model.world_model import WorldModel
 
 
@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> None:
     import os
 
     from worlds1k.data import StreamingVideoDataset
-    from worlds1k.model.decoder import FrameDecoder
+    from worlds1k.model.frame_decoder import FrameDecoder
     from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
     device = torch.device(
@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
         encoder.load_state_dict(ckpt["encoder"])
         encoder.eval()
     else:
-        from worlds1k.model.encoders import build_frame_encoder
+        from worlds1k.model.encoder_base import build_frame_encoder
         from worlds1k.model.frame_encoder import VideoEncoder
 
         config = WorldModelConfig(image_size=args.image_size)
