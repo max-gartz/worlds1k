@@ -287,14 +287,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--max-videos", type=int, default=1)
     p.add_argument("--window-size", type=int, default=128)
     p.add_argument("--image-size", type=int, default=64)
-    p.add_argument("--with-audio", action="store_true", help="Use AudioVideoEncoder for seed encoding.")
     p.add_argument("--dream-steps", type=int, default=20)
     p.add_argument("--output", type=Path, default=Path("dream.html"))
     args = p.parse_args(argv)
 
     import os
 
-    from worlds1k.data import StreamingVideoDataset
     from worlds1k.model.frame_decoder import FrameDecoder
     from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
@@ -302,9 +300,11 @@ def main(argv: list[str] | None = None) -> None:
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
 
+    with_audio = args.audio_decoder_checkpoint is not None
+
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
 
-    if args.with_audio:
+    if with_audio:
         from worlds1k.model.audio_encoder import AudioVideoEncoder
 
         config = WorldModelConfig(image_size=args.image_size, d_input=512 + 256)
@@ -348,12 +348,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.input is not None:
         seed_video, seed_mel, seed_video_raw_audio = _load_mp4(
-            args.input, args.window_size, args.image_size, with_audio=args.with_audio
+            args.input, args.window_size, args.image_size, with_audio=with_audio
         )
         seed_video = seed_video.unsqueeze(0).to(device)
         print(f"seed: {seed_video.shape} (from {args.input})")  # noqa: T201
         with torch.no_grad():
-            if args.with_audio and seed_mel is not None:
+            if with_audio and seed_mel is not None:
                 features = encoder(seed_video, seed_mel.unsqueeze(0).to(device))
             else:
                 features = encoder(seed_video)
@@ -365,14 +365,14 @@ def main(argv: list[str] | None = None) -> None:
             max_videos=args.max_videos,
             window_size=args.window_size,
             image_size=args.image_size,
-            with_audio=args.with_audio,
+            with_audio=with_audio,
             token=os.environ.get("HF_TOKEN"),
         )
         seed = next(iter(ds))
         seed_video = seed[0].unsqueeze(0).to(device)
         print(f"seed: {seed_video.shape}")  # noqa: T201
         with torch.no_grad():
-            if args.with_audio and len(seed) > 1:
+            if with_audio and len(seed) > 1:
                 features = encoder(seed_video, seed[1].unsqueeze(0).to(device))
             else:
                 features = encoder(seed_video)
