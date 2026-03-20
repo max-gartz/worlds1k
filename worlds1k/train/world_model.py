@@ -56,7 +56,7 @@ def _cosine_lr(step: int, warmup: int, base_lr: float, total: int) -> float:
 
 
 @dataclass
-class PretrainConfig:
+class WorldModelTrainConfig:
     max_frames: int = 100_000
     learning_rate: float = 3e-4
     weight_decay: float = 0.01
@@ -68,7 +68,7 @@ class PretrainConfig:
 
 
 @dataclass
-class PretrainResult:
+class WorldModelTrainResult:
     train_losses: list[float] = field(default_factory=list)
     val_losses: list[float] = field(default_factory=list)
     frames_seen: list[int] = field(default_factory=list)
@@ -80,7 +80,7 @@ def _encode_batch(encoder: nn.Module, batch: tuple[torch.Tensor, ...]) -> torch.
     return encoder(batch[0], batch[1])
 
 
-class Pretrainer:
+class WorldModelTrainer:
     """Phase 1 training loop using HuggingFace Accelerate.
 
     Handles mixed precision, device placement, gradient scaling,
@@ -93,9 +93,9 @@ class Pretrainer:
         encoder: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader | None = None,
-        config: PretrainConfig | None = None,
+        config: WorldModelTrainConfig | None = None,
     ) -> None:
-        self.config = config or PretrainConfig()
+        self.config = config or WorldModelTrainConfig()
         use_wandb = os.environ.get("WANDB_API_KEY") is not None
         self.accelerator = Accelerator(mixed_precision="bf16", log_with="wandb" if use_wandb else None)
         self.global_step = 0
@@ -113,14 +113,14 @@ class Pretrainer:
         )
         self.val_loader = self.accelerator.prepare(val_loader) if val_loader is not None else None
 
-    def train(self, run_name: str | None = None) -> PretrainResult:
+    def train(self, run_name: str | None = None) -> WorldModelTrainResult:
         cfg = self.config
         self.accelerator.init_trackers(
             "worlds1k",
             config={"lr": cfg.learning_rate, "max_frames": cfg.max_frames, "warmup": cfg.warmup_steps},
             init_kwargs={"wandb": {"name": run_name}},
         )
-        result = PretrainResult()
+        result = WorldModelTrainResult()
         t0 = time.monotonic()
         running_loss = 0.0
         running_n = 0
@@ -347,14 +347,14 @@ def main(argv: list[str] | None = None) -> None:
         f"({args.batch_size} x {args.window_size} frames/step)"
     )
 
-    trainer_config = PretrainConfig(
+    trainer_config = WorldModelTrainConfig(
         max_frames=args.max_frames,
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
         eval_freq=args.eval_freq,
         checkpoint_dir=args.output_dir,
     )
-    trainer = Pretrainer(model, encoder, train_loader, config=trainer_config)
+    trainer = WorldModelTrainer(model, encoder, train_loader, config=trainer_config)
 
     if args.checkpoint is not None:
         trainer.load_checkpoint(args.checkpoint)

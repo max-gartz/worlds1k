@@ -58,9 +58,9 @@ class TestWorldModelForward:
         assert model(features)["loss"].item() < loss0
 
 
-class TestPretrainer:
+class TestWorldModelTrainer:
     def test_train_video_only(self):
-        from worlds1k.train.world_model import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import WorldModelTrainConfig, WorldModelTrainer
 
         config = _small_config()
         model = WorldModel.from_config(config)
@@ -79,14 +79,14 @@ class TestPretrainer:
         encoder = _FlatEncoder(32)
 
         # 64 frames = 4 steps at batch_size=2, window_size=8
-        train_cfg = PretrainConfig(max_frames=64, eval_freq=1, warmup_steps=0)
-        trainer = Pretrainer(model, encoder, loader, config=train_cfg)
+        train_cfg = WorldModelTrainConfig(max_frames=64, eval_freq=1, warmup_steps=0)
+        trainer = WorldModelTrainer(model, encoder, loader, config=train_cfg)
         result = trainer.train()
 
         assert len(result.train_losses) > 0
 
     def test_train_audio_video(self):
-        from worlds1k.train.world_model import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import WorldModelTrainConfig, WorldModelTrainer
 
         d_input = 48
         config = _small_config(d_input=d_input)
@@ -108,15 +108,15 @@ class TestPretrainer:
         loader = DataLoader(ds, batch_size=2)
         encoder = _MultimodalEncoder()
 
-        train_cfg = PretrainConfig(max_frames=64, eval_freq=1, warmup_steps=0)
-        trainer = Pretrainer(model, encoder, loader, config=train_cfg)
+        train_cfg = WorldModelTrainConfig(max_frames=64, eval_freq=1, warmup_steps=0)
+        trainer = WorldModelTrainer(model, encoder, loader, config=train_cfg)
         result = trainer.train()
 
         assert len(result.train_losses) > 0
 
     def test_stops_at_max_frames(self):
         """Training stops even if max_frames is not a multiple of frames_per_step."""
-        from worlds1k.train.world_model import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import WorldModelTrainConfig, WorldModelTrainer
 
         config = _small_config()
         model = WorldModel.from_config(config)
@@ -134,8 +134,8 @@ class TestPretrainer:
         loader = DataLoader(ds, batch_size=2)
 
         # 50 frames with 16 frames/step = should stop after 3 steps (48 frames)
-        train_cfg = PretrainConfig(max_frames=50, eval_freq=100, warmup_steps=0)
-        trainer = Pretrainer(model, _FlatEncoder(), loader, config=train_cfg)
+        train_cfg = WorldModelTrainConfig(max_frames=50, eval_freq=100, warmup_steps=0)
+        trainer = WorldModelTrainer(model, _FlatEncoder(), loader, config=train_cfg)
         trainer.train()
 
         assert trainer.frames_seen <= 50 + 16  # at most one extra batch
@@ -171,7 +171,7 @@ class TestFullPipeline:
         from worlds1k.data import StreamingVideoDataset
         from worlds1k.model.encoder_base import build_frame_encoder
         from worlds1k.model.frame_encoder import VideoEncoder
-        from worlds1k.train.world_model import PretrainConfig, Pretrainer
+        from worlds1k.train.world_model import WorldModelTrainConfig, WorldModelTrainer
 
         config = WorldModelConfig(num_levels=3, image_size=64)
         model = WorldModel.from_config(config)
@@ -180,11 +180,11 @@ class TestFullPipeline:
         ds = StreamingVideoDataset("ucf101", window_size=128, image_size=64, max_videos=2)
         loader = DataLoader(ds, batch_size=1)
 
-        result = Pretrainer(
+        result = WorldModelTrainer(
             model,
             encoder,
             loader,
-            config=PretrainConfig(max_frames=256, eval_freq=1, warmup_steps=0),
+            config=WorldModelTrainConfig(max_frames=256, eval_freq=1, warmup_steps=0),
         ).train()
 
         assert len(result.train_losses) > 0
