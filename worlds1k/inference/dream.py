@@ -183,34 +183,51 @@ def _mel_to_waveform(mel: torch.Tensor, sample_rate: int = 16000, n_fft: int = 1
     return griffin_lim(spec)
 
 
-def _audio_to_wav_b64(audio: torch.Tensor, sample_rate: int = 16000) -> str:
-    """Convert (samples,) float tensor to base64 WAV data URI."""
-    import tempfile
-
-    import torchaudio
-
-    waveform = audio.unsqueeze(0) if audio.dim() == 1 else audio
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as f:
-        torchaudio.save(f.name, waveform, sample_rate)
-        f.seek(0)
-        data = f.read()
-    return f"data:audio/wav;base64,{base64.b64encode(data).decode()}"
-
-
-def _frames_to_img_sequence(frames: torch.Tensor) -> list[str]:
-    """Convert (T, C, H, W) float [0,1] to list of base64 PNG data URIs."""
+def _frames_to_mp4_b64(
+    frames: torch.Tensor, fps: int = 10, audio: torch.Tensor | None = None, audio_sr: int = 16000
+) -> str:
+    """(T, C, H, W) float [0,1] → base64 mp4 data URI with optional audio track."""
+    import av
     from PIL import Image
 
-    imgs = []
+    buf = io.BytesIO()
+    container = av.open(buf, mode="w", format="mp4")
+    v_stream = container.add_stream("h264", rate=fps)
     h, w = frames.shape[2], frames.shape[3]
     scale = max(1, 256 // h)
+    v_stream.width = w * scale
+    v_stream.height = h * scale
+    v_stream.pix_fmt = "yuv420p"
+
+    a_stream = None
+    if audio is not None:
+        a_stream = container.add_stream("aac", rate=audio_sr)
+        a_stream.layout = "mono"
+
     for i in range(frames.size(0)):
         img = (frames[i].clamp(0, 1) * 255).byte().permute(1, 2, 0).numpy()
         pil = Image.fromarray(img).resize((w * scale, h * scale), Image.NEAREST)
-        buf = io.BytesIO()
-        pil.save(buf, format="PNG")
-        imgs.append(f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}")
-    return imgs
+        frame = av.VideoFrame.from_image(pil)
+        for packet in v_stream.encode(frame):
+            container.mux(packet)
+    for packet in v_stream.encode():
+        container.mux(packet)
+
+    if a_stream is not None and audio is not None:
+        import numpy as np
+
+        audio_np = audio.numpy().astype(np.float32)
+        if audio_np.ndim == 1:
+            audio_np = audio_np.reshape(1, -1)
+        a_frame = av.AudioFrame.from_ndarray(audio_np, format="fltp", layout="mono")
+        a_frame.sample_rate = audio_sr
+        for packet in a_stream.encode(a_frame):
+            container.mux(packet)
+        for packet in a_stream.encode():
+            container.mux(packet)
+
+    container.close()
+    return f"data:video/mp4;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
 
 def _render_html(
@@ -221,24 +238,16 @@ def _render_html(
     seed_audio: torch.Tensor | None = None,
     seed_audio_sr: int = 16000,
 ) -> None:
-    print("encoding seed frames...")  # noqa: T201
-    seed_imgs = _frames_to_img_sequence(seed[:: max(1, seed.shape[0] // 8)])  # 8 evenly spaced
-    seed_imgs_json = str(seed_imgs).replace("'", '"')
+    print("encoding seed video...")  # noqa: T201
+    seed_vid = _frames_to_mp4_b64(seed, fps=25, audio=seed_audio, audio_sr=seed_audio_sr)
 
-    seed_audio_tag = ""
-    if seed_audio is not None:
-        seed_wav = _audio_to_wav_b64(seed_audio, seed_audio_sr)
-        seed_audio_tag = f'<audio controls src="{seed_wav}" style="margin-top:.5rem"></audio>'
-
-    print("encoding dream frames...")  # noqa: T201
-    dream_imgs = _frames_to_img_sequence(dream)
-    dream_imgs_json = str(dream_imgs).replace("'", '"')
-
-    dream_audio_tag = ""
+    dream_audio = None
     if dream_mel is not None:
-        print("synthesizing audio from mel spectrogram (Griffin-Lim)...")  # noqa: T201
-        dream_wav = _audio_to_wav_b64(_mel_to_waveform(dream_mel.squeeze(0)))
-        dream_audio_tag = f'<audio controls src="{dream_wav}" style="margin-top:.5rem"></audio>'
+        print("synthesizing dream audio (Griffin-Lim)...")  # noqa: T201
+        dream_audio = _mel_to_waveform(dream_mel.squeeze(0))
+
+    print("encoding dream video...")  # noqa: T201
+    dream_vid = _frames_to_mp4_b64(dream, fps=5, audio=dream_audio)
 
     html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Thousand Worlds — Dream</title>
@@ -246,45 +255,23 @@ def _render_html(
 body {{ background:#0a0b0f; color:#e2e0dc; font-family:Georgia,serif; padding:2rem; max-width:900px; margin:0 auto }}
 h1 {{ font-size:2rem; font-weight:normal }} h1 em {{ color:#c4a05c; font-style:italic }}
 h2 {{ font-size:1rem; color:#c4a05c; font-family:monospace; margin:2rem 0 .5rem }}
-p {{ color:#8a8880; font-size:.9rem }}
-.player {{ border:1px solid #252630; border-radius:6px; display:inline-block; padding:4px; background:#000 }}
-.player img {{ display:block; border-radius:4px }}
-.row {{ margin:1rem 0 }}
+p {{ color:#8a8880; font-size:.9rem }} video {{ border:1px solid #252630; border-radius:6px }}
+.row {{ display:flex; gap:2rem; margin:1rem 0 }}
 .stats {{ font-family:monospace; font-size:.8rem; color:#5a5850; margin-top:2rem }}
 .stats td {{ padding:.2rem 1rem .2rem 0 }}
 </style></head><body>
 <h1>Thousand <em>Worlds</em></h1>
-
 <h2>Seed Video (ground truth)</h2>
 <p>{seed.shape[0]} frames at {seed.shape[2]}x{seed.shape[3]}</p>
-<div class="row">
-  <div class="player"><img id="seed-img" width="384" height="384"></div>
-  {seed_audio_tag}
-</div>
-
+<div class="row"><video width="384" height="384" controls loop>
+<source src="{seed_vid}" type="video/mp4"></video></div>
 <h2>Dream Sequence</h2>
 <p>{dream.shape[0]} steps — autoregressive rollout, no sensory input after seed.</p>
-<div class="row">
-  <div class="player"><img id="dream-img" width="384" height="384"></div>
-  {dream_audio_tag}
-</div>
-
+<div class="row"><video width="384" height="384" controls loop>
+<source src="{dream_vid}" type="video/mp4"></video></div>
 <table class="stats"><tr><td>seed frames</td><td>{seed.shape[0]}</td></tr>
 <tr><td>dream steps</td><td>{dream.shape[0]}</td></tr>
 <tr><td>resolution</td><td>{seed.shape[2]}x{seed.shape[3]}</td></tr></table>
-
-<script>
-function animate(imgId, frames, fps) {{
-  const el = document.getElementById(imgId);
-  let i = 0;
-  el.src = frames[0];
-  setInterval(() => {{ i = (i + 1) % frames.length; el.src = frames[i]; }}, 1000 / fps);
-}}
-const seedFrames = {seed_imgs_json};
-const dreamFrames = {dream_imgs_json};
-animate('seed-img', seedFrames, 8);
-animate('dream-img', dreamFrames, 3);
-</script>
 </body></html>"""
     out.write_text(html)
     print(f"demo written to {out}")  # noqa: T201
