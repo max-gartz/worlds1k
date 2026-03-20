@@ -279,7 +279,6 @@ class StreamingVideoDataset(IterableDataset[tuple[torch.Tensor, ...]]):
     def __iter__(self) -> Iterator[tuple[torch.Tensor, ...]]:
         cached = self._cached_clips
         if cached:
-            print(f"loading {len(cached)} cached clips from {self._cache_dir}")  # noqa: T201
             yield from self._iter_cache(cached)
         else:
             yield from self._iter_and_cache()
