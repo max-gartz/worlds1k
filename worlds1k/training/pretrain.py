@@ -96,7 +96,8 @@ class Pretrainer:
         config: PretrainConfig | None = None,
     ) -> None:
         self.config = config or PretrainConfig()
-        self.accelerator = Accelerator(mixed_precision="bf16")
+        use_wandb = os.environ.get("WANDB_API_KEY") is not None
+        self.accelerator = Accelerator(mixed_precision="bf16", log_with="wandb" if use_wandb else None)
         self.global_step = 0
         self.frames_seen = 0
 
@@ -109,8 +110,13 @@ class Pretrainer:
         )
         self.val_loader = self.accelerator.prepare(val_loader) if val_loader is not None else None
 
-    def train(self, total_steps: int | None = None) -> PretrainResult:
+    def train(self, total_steps: int | None = None, run_name: str | None = None) -> PretrainResult:
         cfg = self.config
+        self.accelerator.init_trackers(
+            "worlds1k",
+            config={"lr": cfg.learning_rate, "epochs": cfg.num_epochs, "warmup": cfg.warmup_steps},
+            init_kwargs={"wandb": {"name": run_name}},
+        )
         result = PretrainResult()
         t0 = time.monotonic()
         running_loss = 0.0
@@ -150,6 +156,10 @@ class Pretrainer:
                         f"step {self.global_step} | {_ftime(time.monotonic() - t0)} | "
                         f"frames {_fmt(self.frames_seen)} | lr {lr:.2e} | train {tl:.4f} | val {vl:.4f}"
                     )
+                    self.accelerator.log(
+                        {"train_loss": tl, "val_loss": vl, "lr": lr, "frames": self.frames_seen},
+                        step=self.global_step,
+                    )
                     running_loss = 0.0
                     running_n = 0
                     if cfg.checkpoint_dir is not None:
@@ -173,6 +183,7 @@ class Pretrainer:
             if cfg.checkpoint_dir is not None:
                 self._save(cfg.checkpoint_dir)
 
+        self.accelerator.end_training()
         return result
 
     def _evaluate(self) -> float:

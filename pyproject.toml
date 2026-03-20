@@ -12,6 +12,7 @@ dependencies = [
     "torch>=2.0",
     "torchcodec>=0.10.0",
     "transformers>=4.40",
+    "wandb>=0.25.1",
 ]
 
 [dependency-groups]

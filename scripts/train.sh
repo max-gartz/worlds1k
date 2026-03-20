@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Training script for cloud GPU runs.
-# Expects HF_TOKEN to be set and uv to be installed.
+# Expects HF_TOKEN and WANDB_API_KEY to be set.
 #
 # Usage:
 #   ./scripts/train.sh              # default: disney, 500 clips
