@@ -97,6 +97,71 @@ class Dreamer:
         return result
 
 
+def _load_mp4(
+    path: Path, window_size: int, image_size: int, *, with_audio: bool = False
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    """Load an MP4 file and return (video, mel, raw_audio_waveform).
+
+    video: (T, C, H, W) float [0, 1]
+    mel: (T, 80, 3000) or None
+    raw_audio: (samples,) float waveform or None
+    """
+    import torch.nn.functional as F  # noqa: N812
+    from torchcodec.decoders import AudioDecoder, VideoDecoder
+
+    raw = path.read_bytes()
+    vdec = VideoDecoder(raw)
+    n = vdec.metadata.num_frames
+    fps = vdec.metadata.average_fps
+
+    start = torch.randint(0, max(1, n - window_size + 1), (1,)).item() if n >= window_size else 0
+    end = min(start + window_size, n)
+    video = vdec.get_frames_in_range(start=start, stop=end).data
+    if video.size(0) < window_size:
+        video = torch.cat([video, video[-1:].expand(window_size - video.size(0), -1, -1, -1)], dim=0)
+    video = video.float() / 255.0
+    if video.shape[-2] != image_size or video.shape[-1] != image_size:
+        video = F.interpolate(video, size=(image_size, image_size), mode="bilinear", align_corners=False)
+
+    mel = None
+    raw_audio = None
+
+    if with_audio:
+        try:
+            adec = AudioDecoder(raw, sample_rate=16000)
+            all_audio = adec.get_all_samples().data
+            all_audio = all_audio.mean(dim=0) if all_audio.size(0) > 1 else all_audio.squeeze(0)
+
+            # Extract raw audio for the seed window
+            start_sample = int(start / fps * 16000)
+            end_sample = int(end / fps * 16000)
+            raw_audio = all_audio[start_sample:end_sample]
+
+            # Compute per-frame mel spectrograms
+            from transformers import WhisperFeatureExtractor
+
+            fe = WhisperFeatureExtractor()
+            mels = []
+            half = 16000 * 15  # 15s half-window
+            for i in range(window_size):
+                center = int((start + i) / fps * 16000)
+                a_start = max(0, center - half)
+                a_end = a_start + 16000 * 30
+                if a_end > all_audio.size(0):
+                    a_end = all_audio.size(0)
+                    a_start = max(0, a_end - 16000 * 30)
+                chunk = all_audio[a_start:a_end]
+                if chunk.size(0) < 16000 * 30:
+                    chunk = F.pad(chunk, (0, 16000 * 30 - chunk.size(0)))
+                m = fe(chunk.numpy(), sampling_rate=16000, return_tensors="pt")
+                mels.append(m.input_features.squeeze(0))
+            mel = torch.stack(mels)
+        except Exception as e:
+            print(f"no audio track: {e}")  # noqa: T201
+
+    return video, mel, raw_audio
+
+
 def _mel_to_waveform(mel: torch.Tensor, sample_rate: int = 16000, n_fft: int = 1024, n_mels: int = 80) -> torch.Tensor:
     """Convert mel spectrogram to waveform using Griffin-Lim.
 
@@ -171,8 +236,10 @@ def _render_html(
     dream: torch.Tensor,
     out: Path,
     dream_mel: torch.Tensor | None = None,
+    seed_audio: torch.Tensor | None = None,
+    seed_audio_sr: int = 16000,
 ) -> None:
-    seed_vid = _frames_to_mp4_b64(seed, fps=25)
+    seed_vid = _frames_to_mp4_b64(seed, fps=25, audio=seed_audio, audio_sr=seed_audio_sr)
 
     dream_audio = None
     if dream_mel is not None:
@@ -213,7 +280,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--checkpoint", type=Path, required=True, help="World model checkpoint.")
     p.add_argument("--decoder-checkpoint", type=Path, default=None, help="Frame decoder checkpoint.")
     p.add_argument("--audio-decoder-checkpoint", type=Path, default=None, help="Audio decoder checkpoint.")
-    p.add_argument("--dataset", type=str, default="ucf101", help="Dataset for seed video.")
+    p.add_argument("--input", type=Path, default=None, help="Input MP4 file (alternative to --dataset).")
+    p.add_argument("--dataset", type=str, default=None, help="Dataset for seed video.")
     p.add_argument("--max-videos", type=int, default=1)
     p.add_argument("--window-size", type=int, default=128)
     p.add_argument("--image-size", type=int, default=64)
@@ -274,25 +342,41 @@ def main(argv: list[str] | None = None) -> None:
         audio_decoder.load_state_dict(adec_ckpt["audio_decoder"])
         audio_decoder.eval()
 
-    ds = StreamingVideoDataset(
-        args.dataset,
-        max_videos=args.max_videos,
-        window_size=args.window_size,
-        image_size=args.image_size,
-        with_audio=args.with_audio,
-        token=os.environ.get("HF_TOKEN"),
-    )
+    seed_video_raw_audio = None  # original audio waveform for the seed video
 
-    seed = next(iter(ds))
-    seed_video = seed[0].unsqueeze(0).to(device)
-    print(f"seed: {seed_video.shape}")  # noqa: T201
+    if args.input is not None:
+        seed_video, seed_mel, seed_video_raw_audio = _load_mp4(
+            args.input, args.window_size, args.image_size, with_audio=args.with_audio
+        )
+        seed_video = seed_video.unsqueeze(0).to(device)
+        print(f"seed: {seed_video.shape} (from {args.input})")  # noqa: T201
+        with torch.no_grad():
+            if args.with_audio and seed_mel is not None:
+                features = encoder(seed_video, seed_mel.unsqueeze(0).to(device))
+            else:
+                features = encoder(seed_video)
+    elif args.dataset is not None:
+        from worlds1k.data import StreamingVideoDataset
 
-    with torch.no_grad():
-        if args.with_audio:
-            seed_audio = seed[1].unsqueeze(0).to(device)
-            features = encoder(seed_video, seed_audio)
-        else:
-            features = encoder(seed_video)
+        ds = StreamingVideoDataset(
+            args.dataset,
+            max_videos=args.max_videos,
+            window_size=args.window_size,
+            image_size=args.image_size,
+            with_audio=args.with_audio,
+            token=os.environ.get("HF_TOKEN"),
+        )
+        seed = next(iter(ds))
+        seed_video = seed[0].unsqueeze(0).to(device)
+        print(f"seed: {seed_video.shape}")  # noqa: T201
+        with torch.no_grad():
+            if args.with_audio and len(seed) > 1:
+                features = encoder(seed_video, seed[1].unsqueeze(0).to(device))
+            else:
+                features = encoder(seed_video)
+    else:
+        print("error: provide --input or --dataset")  # noqa: T201
+        return
 
     dreamer = Dreamer(model, decoder, audio_decoder)
     result = dreamer.dream(features, num_steps=args.dream_steps)
@@ -306,6 +390,7 @@ def main(argv: list[str] | None = None) -> None:
             result["frames_trajectory"].squeeze(0).cpu(),
             args.output,
             dream_mel=mel_cpu,
+            seed_audio=seed_video_raw_audio,
         )
     else:
         torch.save(
