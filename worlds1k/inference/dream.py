@@ -7,8 +7,8 @@ world model's predictions without new observations.  The model
 Run directly::
 
     uv run python -m worlds1k.inference.dream \\
-        --checkpoint checkpoints/world_model.pt \\
-        --decoder-checkpoint checkpoints/decoder.pt \\
+        --world-model checkpoints/latest.pt \\
+        --vision-decoder checkpoints/decoders/vision_decoder.pt \\
         --dataset epic-kitchens --dream-steps 30 \\
         --output dream_demo.html
 """
@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from worlds1k.model.frame_decoder import FrameDecoder
     from worlds1k.model.world_model import WorldModel
 
 
@@ -38,21 +37,25 @@ class Dreamer:
     def __init__(
         self,
         model: WorldModel,
-        decoder: FrameDecoder | None = None,
-        audio_decoder: Any | None = None,
+        decoder: Any | None = None,
     ) -> None:
         self.model = model
         self.decoder = decoder
-        self.audio_decoder = audio_decoder
 
     @torch.no_grad()
     def dream(self, seed_features: torch.Tensor, num_steps: int) -> dict[str, torch.Tensor]:
-        """Roll out predictions autoregressively from seed features.
+        """Roll out predictions autoregressively with a sliding window.
+
+        Runs the full hierarchical model at each step, shifting the
+        feature window forward by one predicted frame.  The window size
+        stays constant (same as seed length) so all hierarchy levels
+        always have enough temporal context.
 
         Parameters
         ----------
         seed_features : torch.Tensor
             Encoded seed frames, shape ``(B, T_seed, d_input)``.
+            T_seed must be large enough for all hierarchy levels.
         num_steps : int
             Number of forward prediction steps to unroll.
 
@@ -63,56 +66,44 @@ class Dreamer:
             ``"frames_trajectory"`` — dreamed pixel frames (if decoder).
         """
         self.model.eval()
-        device = seed_features.device
 
-        outputs = self.model(seed_features)
-        z_level0 = outputs["z"][0]
-        level0 = self.model.levels[0]
-
-        z_curr = z_level0[:, -1, :]
-        trajectory: list[torch.Tensor] = [z_curr]
-
-        if z_level0.size(1) >= 2:
-            action = level0.action_head(z_level0[:, -2, :], z_curr)
-        else:
-            action = torch.zeros(z_curr.size(0), level0.action_head.d_action, device=device)
+        features = seed_features
+        output = self.model(features)
+        predicted_features: list[torch.Tensor] = [features[:, -1, :]]  # last seed feature
 
         for _ in range(num_steps):
-            z_next = level0.predictor(z_curr, action, context=None)
-            trajectory.append(z_next)
-            action = level0.action_head(z_curr, z_next)
-            z_curr = z_next
+            next_feat = output["predicted"][:, -1:, :]  # (B, 1, d_input)
+            features = torch.cat([features[:, 1:, :], next_feat], dim=1)  # slide window
+            output = self.model(features)
+            predicted_features.append(next_feat[:, 0, :])
 
-        z_traj = torch.stack(trajectory, dim=1)
-        result: dict[str, torch.Tensor] = {"z_trajectory": z_traj}
+        feat_traj = torch.stack(predicted_features, dim=1)  # (B, num_steps+1, d_input)
+        result: dict[str, torch.Tensor] = {
+            "z_trajectory": feat_traj,  # keep key name for compat
+            "predicted_features": feat_traj,
+        }
 
         if self.decoder is not None:
-            b, t, d = z_traj.shape
-            frames = self.decoder(z_traj.reshape(b * t, d))
+            b, t, d = feat_traj.shape
+            frames = self.decoder.sample(feat_traj.reshape(b * t, d))
             result["frames_trajectory"] = frames.view(b, t, *frames.shape[1:])
-
-        if self.audio_decoder is not None:
-            result["mel_trajectory"] = self.audio_decoder.decode_sequence(z_traj)
 
         return result
 
 
 def _load_mp4(
-    path: Path, window_size: int, image_size: int, *, with_audio: bool = False
-) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-    """Load an MP4 file and return (video, mel, raw_audio_waveform).
+    path: Path, window_size: int, image_size: int,
+) -> tuple[torch.Tensor, None, None]:
+    """Load an MP4 file and return (video, None, None).
 
     video: (T, C, H, W) float [0, 1]
-    mel: (T, 80, 3000) or None
-    raw_audio: (samples,) float waveform or None
     """
     import torch.nn.functional as F  # noqa: N812
-    from torchcodec.decoders import AudioDecoder, VideoDecoder
+    from torchcodec.decoders import VideoDecoder
 
     raw = path.read_bytes()
     vdec = VideoDecoder(raw)
     n = vdec.metadata.num_frames
-    fps = vdec.metadata.average_fps
 
     start = torch.randint(0, max(1, n - window_size + 1), (1,)).item() if n >= window_size else 0
     end = min(start + window_size, n)
@@ -123,70 +114,13 @@ def _load_mp4(
     if video.shape[-2] != image_size or video.shape[-1] != image_size:
         video = F.interpolate(video, size=(image_size, image_size), mode="bilinear", align_corners=False)
 
-    mel = None
-    raw_audio = None
-
-    if with_audio:
-        try:
-            adec = AudioDecoder(raw, sample_rate=16000)
-            all_audio = adec.get_all_samples().data
-            all_audio = all_audio.mean(dim=0) if all_audio.size(0) > 1 else all_audio.squeeze(0)
-
-            # Extract raw audio for the seed window
-            start_sample = int(start / fps * 16000)
-            end_sample = int(end / fps * 16000)
-            raw_audio = all_audio[start_sample:end_sample]
-
-            # Compute per-frame mel spectrograms
-            from transformers import WhisperFeatureExtractor
-
-            fe = WhisperFeatureExtractor()
-            mels = []
-            half = 16000 * 15  # 15s half-window
-            for i in range(window_size):
-                center = int((start + i) / fps * 16000)
-                a_start = max(0, center - half)
-                a_end = a_start + 16000 * 30
-                if a_end > all_audio.size(0):
-                    a_end = all_audio.size(0)
-                    a_start = max(0, a_end - 16000 * 30)
-                chunk = all_audio[a_start:a_end]
-                if chunk.size(0) < 16000 * 30:
-                    chunk = F.pad(chunk, (0, 16000 * 30 - chunk.size(0)))
-                m = fe(chunk.numpy(), sampling_rate=16000, return_tensors="pt")
-                mels.append(m.input_features.squeeze(0))
-            mel = torch.stack(mels)
-        except Exception as e:
-            print(f"no audio track: {e}")  # noqa: T201
-
-    return video, mel, raw_audio
-
-
-def _mel_to_waveform(mel: torch.Tensor, sample_rate: int = 16000, n_fft: int = 1024, n_mels: int = 80) -> torch.Tensor:
-    """Convert mel spectrogram to waveform using Griffin-Lim.
-
-    Parameters
-    ----------
-    mel : torch.Tensor
-        Mel spectrogram, shape ``(n_mels, T_mel)``.
-
-    Returns
-    -------
-    torch.Tensor
-        Waveform, shape ``(samples,)``.
-    """
-    from torchaudio.transforms import GriffinLim, InverseMelScale
-
-    inv_mel = InverseMelScale(n_stft=n_fft // 2 + 1, n_mels=n_mels, sample_rate=sample_rate)
-    griffin_lim = GriffinLim(n_fft=n_fft, hop_length=n_fft // 4)
-    spec = inv_mel(mel)
-    return griffin_lim(spec)
+    return video, None, None
 
 
 def _frames_to_mp4_b64(
-    frames: torch.Tensor, fps: int = 10, audio: torch.Tensor | None = None, audio_sr: int = 16000
+    frames: torch.Tensor, fps: int = 10,
 ) -> str:
-    """(T, C, H, W) float [0,1] → base64 mp4 data URI with optional audio track."""
+    """(T, C, H, W) float [0,1] -> base64 mp4 data URI."""
     import av
     from PIL import Image
 
@@ -199,11 +133,6 @@ def _frames_to_mp4_b64(
     v_stream.height = h * scale
     v_stream.pix_fmt = "yuv420p"
 
-    a_stream = None
-    if audio is not None:
-        a_stream = container.add_stream("aac", rate=audio_sr)
-        a_stream.layout = "mono"
-
     for i in range(frames.size(0)):
         img = (frames[i].clamp(0, 1) * 255).byte().permute(1, 2, 0).numpy()
         pil = Image.fromarray(img).resize((w * scale, h * scale), Image.NEAREST)
@@ -213,19 +142,6 @@ def _frames_to_mp4_b64(
     for packet in v_stream.encode():
         container.mux(packet)
 
-    if a_stream is not None and audio is not None:
-        import numpy as np
-
-        audio_np = audio.numpy().astype(np.float32)
-        if audio_np.ndim == 1:
-            audio_np = audio_np.reshape(1, -1)
-        a_frame = av.AudioFrame.from_ndarray(audio_np, format="fltp", layout="mono")
-        a_frame.sample_rate = audio_sr
-        for packet in a_stream.encode(a_frame):
-            container.mux(packet)
-        for packet in a_stream.encode():
-            container.mux(packet)
-
     container.close()
     return f"data:video/mp4;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
@@ -234,20 +150,12 @@ def _render_html(
     seed: torch.Tensor,
     dream: torch.Tensor,
     out: Path,
-    dream_mel: torch.Tensor | None = None,
-    seed_audio: torch.Tensor | None = None,
-    seed_audio_sr: int = 16000,
 ) -> None:
     print("encoding seed video...")  # noqa: T201
-    seed_vid = _frames_to_mp4_b64(seed, fps=25, audio=seed_audio, audio_sr=seed_audio_sr)
-
-    dream_audio = None
-    if dream_mel is not None:
-        print("synthesizing dream audio (Griffin-Lim)...")  # noqa: T201
-        dream_audio = _mel_to_waveform(dream_mel.squeeze(0))
+    seed_vid = _frames_to_mp4_b64(seed, fps=25)
 
     print("encoding dream video...")  # noqa: T201
-    dream_vid = _frames_to_mp4_b64(dream, fps=5, audio=dream_audio)
+    dream_vid = _frames_to_mp4_b64(dream, fps=5)
 
     html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Thousand Worlds — Dream</title>
@@ -279,84 +187,59 @@ p {{ color:#8a8880; font-size:.9rem }} video {{ border:1px solid #252630; border
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="worlds1k.inference.dream", description="Dream from a trained world model.")
-    p.add_argument("--checkpoint", type=Path, required=True, help="World model checkpoint.")
-    p.add_argument("--decoder-checkpoint", type=Path, default=None, help="Frame decoder checkpoint.")
-    p.add_argument("--audio-decoder-checkpoint", type=Path, default=None, help="Audio decoder checkpoint.")
+    p.add_argument("--world-model", type=Path, required=True, help="Path to world model checkpoint (.pt).")
+    p.add_argument("--model", type=str, required=True, help="Named model config (e.g. 'world-3L-small').")
+    p.add_argument("--vision-decoder", type=Path, default=None, help="Path to vision decoder checkpoint (.pt).")
     p.add_argument("--input", type=Path, default=None, help="Input MP4 file (alternative to --dataset).")
     p.add_argument("--dataset", type=str, default=None, help="Dataset for seed video.")
     p.add_argument("--max-videos", type=int, default=1)
     p.add_argument("--window-size", type=int, default=128)
     p.add_argument("--image-size", type=int, default=64)
     p.add_argument("--dream-steps", type=int, default=20)
+    p.add_argument("--num-inference-steps", type=int, default=20, help="DDIM steps for sampling (default: 20).")
     p.add_argument("--output", type=Path, default=Path("dream.html"))
     args = p.parse_args(argv)
 
     import os
 
-    from worlds1k.model.frame_decoder import FrameDecoder
-    from worlds1k.model.world_model import WorldModel, WorldModelConfig
+    from worlds1k.model.configs import build_diffusion_decoder, get_config
+    from worlds1k.model.world_model import WorldModel
 
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
 
-    with_audio = args.audio_decoder_checkpoint is not None
+    config = get_config(args.model)
+    config.image_size = args.image_size
 
-    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    ckpt = torch.load(args.world_model, map_location="cpu", weights_only=True)
 
-    if with_audio:
-        from worlds1k.model.audio_encoder import AudioVideoEncoder
+    from worlds1k.model.encoder_base import build_vision_encoder
+    from worlds1k.model.vision_encoder import VideoEncoder
 
-        config = WorldModelConfig(image_size=args.image_size, d_input=512 + 256)
-        model = WorldModel.from_config(config).to(device)
-        model.load_state_dict(ckpt["model"])
-        model.eval()
-        encoder = AudioVideoEncoder.from_pretrained("dinov2-small", 512, "whisper-tiny", 256).to(device)
-        encoder.load_state_dict(ckpt["encoder"])
-        encoder.eval()
-    else:
-        from worlds1k.model.encoder_base import build_frame_encoder
-        from worlds1k.model.frame_encoder import VideoEncoder
-
-        config = WorldModelConfig(image_size=args.image_size)
-        model = WorldModel.from_config(config).to(device)
-        model.load_state_dict(ckpt["model"])
-        model.eval()
-        encoder = VideoEncoder(build_frame_encoder(config)).to(device)
-        encoder.load_state_dict(ckpt["encoder"])
-        encoder.eval()
+    model = WorldModel.from_config(config).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    encoder = VideoEncoder(build_vision_encoder(config)).to(device)
+    encoder.load_state_dict(ckpt["encoder"])
+    encoder.eval()
 
     decoder = None
-    if args.decoder_checkpoint:
-        decoder = FrameDecoder(config.d_latents[0], frame_height=args.image_size, frame_width=args.image_size).to(
-            device
-        )
-        dec_ckpt = torch.load(args.decoder_checkpoint, map_location="cpu", weights_only=True)
+    if args.vision_decoder:
+        dec_ckpt = torch.load(args.vision_decoder, map_location="cpu", weights_only=True)
+        arch = dec_ckpt.get("arch", "adagn")
+        size = dec_ckpt.get("size", "base")
+        num_inf = dec_ckpt.get("num_inference_steps", args.num_inference_steps)
+        decoder = build_diffusion_decoder(config, arch=arch, size=size, num_inference_steps=num_inf).to(device)
         decoder.load_state_dict(dec_ckpt["decoder"])
         decoder.eval()
 
-    audio_decoder = None
-    if args.audio_decoder_checkpoint:
-        from worlds1k.model.audio_decoder import AudioDecoder
-
-        audio_decoder = AudioDecoder(config.d_latents[0]).to(device)
-        adec_ckpt = torch.load(args.audio_decoder_checkpoint, map_location="cpu", weights_only=True)
-        audio_decoder.load_state_dict(adec_ckpt["audio_decoder"])
-        audio_decoder.eval()
-
-    seed_video_raw_audio = None  # original audio waveform for the seed video
-
     if args.input is not None:
-        seed_video, seed_mel, seed_video_raw_audio = _load_mp4(
-            args.input, args.window_size, args.image_size, with_audio=with_audio
-        )
+        seed_video, _, _ = _load_mp4(args.input, args.window_size, args.image_size)
         seed_video = seed_video.unsqueeze(0).to(device)
         print(f"seed: {seed_video.shape} (from {args.input})")  # noqa: T201
         with torch.no_grad():
-            if with_audio and seed_mel is not None:
-                features = encoder(seed_video, seed_mel.unsqueeze(0).to(device))
-            else:
-                features = encoder(seed_video)
+            features = encoder(seed_video)
     elif args.dataset is not None:
         from worlds1k.data import StreamingVideoDataset
 
@@ -365,34 +248,26 @@ def main(argv: list[str] | None = None) -> None:
             max_videos=args.max_videos,
             window_size=args.window_size,
             image_size=args.image_size,
-            with_audio=with_audio,
             token=os.environ.get("HF_TOKEN"),
         )
         seed = next(iter(ds))
         seed_video = seed[0].unsqueeze(0).to(device)
         print(f"seed: {seed_video.shape}")  # noqa: T201
         with torch.no_grad():
-            if with_audio and len(seed) > 1:
-                features = encoder(seed_video, seed[1].unsqueeze(0).to(device))
-            else:
-                features = encoder(seed_video)
+            features = encoder(seed_video)
     else:
         print("error: provide --input or --dataset")  # noqa: T201
         return
 
-    dreamer = Dreamer(model, decoder, audio_decoder)
+    dreamer = Dreamer(model, decoder)
     result = dreamer.dream(features, num_steps=args.dream_steps)
     print(f"dream: {result['z_trajectory'].shape}")  # noqa: T201
 
     if decoder and "frames_trajectory" in result:
-        mel = result.get("mel_trajectory")
-        mel_cpu = mel.cpu() if mel is not None else None
         _render_html(
             seed_video.squeeze(0).cpu(),
             result["frames_trajectory"].squeeze(0).cpu(),
             args.output,
-            dream_mel=mel_cpu,
-            seed_audio=seed_video_raw_audio,
         )
     else:
         torch.save(

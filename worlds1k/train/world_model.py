@@ -25,7 +25,7 @@ from accelerate import Accelerator
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
-    from worlds1k.model.world_model import WorldModel
+    from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
 _SUFFIXES = ((1e9, "B"), (1e6, "M"), (1e3, "K"))
 
@@ -94,14 +94,19 @@ class WorldModelTrainer:
         train_loader: DataLoader,
         val_loader: DataLoader | None = None,
         config: WorldModelTrainConfig | None = None,
+        model_config: WorldModelConfig | None = None,
+        decoder: nn.Module | None = None,
     ) -> None:
         self.config = config or WorldModelTrainConfig()
+        self.model_config = model_config
         use_wandb = os.environ.get("WANDB_API_KEY") is not None
         self.accelerator = Accelerator(mixed_precision="bf16", log_with="wandb" if use_wandb else None)
         self.global_step = 0
         self.frames_seen = 0
 
         all_params = list(model.parameters()) + list(encoder.parameters())
+        if decoder is not None:
+            all_params += list(decoder.parameters())
         trainable = [p for p in all_params if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable, lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
 
@@ -111,6 +116,7 @@ class WorldModelTrainer:
         self.model, self.encoder, self.optimizer, self.train_loader = self.accelerator.prepare(
             model, encoder, optimizer, train_loader
         )
+        self.decoder = self.accelerator.prepare(decoder) if decoder is not None else None
         self.val_loader = self.accelerator.prepare(val_loader) if val_loader is not None else None
 
     def train(self, run_name: str | None = None) -> WorldModelTrainResult:
@@ -130,6 +136,30 @@ class WorldModelTrainer:
         self.model.train()
         self.encoder.train()
 
+        # Accumulators for per-level metrics (averaged over eval_freq steps)
+        num_levels = self.accelerator.unwrap_model(self.model).config.num_levels
+        running_metrics: dict[str, list[float]] = {}
+
+        def _accum_metrics(output: dict) -> None:
+            if "metrics" not in output:
+                return
+            m = output["metrics"]
+            ll = output["level_losses"]
+            for i in range(num_levels):
+                for key, vals in [
+                    (f"pred_loss/level_{i}", ll[i]),
+                    (f"z_sparsity/level_{i}", m["z_sparsity_achieved"][i]),
+                    (f"a_sparsity/level_{i}", m["a_sparsity_achieved"][i]),
+                    (f"alpha/level_{i}", m["alpha"][i]),
+                    (f"action_entropy/level_{i}", m["action_entropy"][i]),
+                ]:
+                    running_metrics.setdefault(key, []).append(vals.item())
+
+        def _flush_metrics() -> dict[str, float]:
+            flushed = {k: sum(v) / len(v) for k, v in running_metrics.items() if v}
+            running_metrics.clear()
+            return flushed
+
         for batch in self.train_loader:
             if self.frames_seen >= cfg.max_frames:
                 break
@@ -145,13 +175,26 @@ class WorldModelTrainer:
 
             with self.accelerator.autocast():
                 features = _encode_batch(self.encoder, batch)
-                loss = self.model(features)["loss"]
+                output = self.model(features)
+                loss = output["loss"]
 
             self.accelerator.backward(loss)
+
+            # Compute per-level gradient norms before clipping
+            if self.global_step % cfg.eval_freq == 0 or running_n == 0:
+                model_unwrapped = self.accelerator.unwrap_model(self.model)
+                for i, level in enumerate(model_unwrapped.levels):
+                    grads = [p.grad for p in level.parameters() if p.grad is not None]
+                    if grads:
+                        total_norm = torch.cat([g.flatten() for g in grads]).norm().item()
+                        running_metrics.setdefault(f"grad_norm/level_{i}", []).append(total_norm)
+
             if cfg.grad_clip_norm > 0:
                 self.accelerator.clip_grad_norm_(self.model.parameters(), cfg.grad_clip_norm)
             self.optimizer.step()
             self.optimizer.zero_grad()
+
+            _accum_metrics(output)
 
             self.frames_seen += batch[0].shape[0] * batch[0].shape[1]
             self.global_step += 1
@@ -160,9 +203,7 @@ class WorldModelTrainer:
 
             if self.global_step % cfg.eval_freq == 0:
                 tl = running_loss / running_n
-                vl = self._evaluate()
                 result.train_losses.append(tl)
-                result.val_losses.append(vl)
                 result.frames_seen.append(self.frames_seen)
                 pct = 100 * self.frames_seen / cfg.max_frames
                 self.accelerator.print(
@@ -170,10 +211,13 @@ class WorldModelTrainer:
                     f"frames {_fmt(self.frames_seen)}/{_fmt(cfg.max_frames)} ({pct:.0f}%) | "
                     f"lr {lr:.2e} | train {tl:.4f}"
                 )
-                self.accelerator.log(
-                    {"train_loss": tl, "val_loss": vl, "lr": lr, "frames": self.frames_seen},
-                    step=self.global_step,
-                )
+                log_dict = {"train_loss": tl, "lr": lr, "frames": self.frames_seen}
+                log_dict.update(_flush_metrics())
+                vl = self._evaluate()
+                if not math.isnan(vl):
+                    log_dict["val_loss"] = vl
+                    result.val_losses.append(vl)
+                self.accelerator.log(log_dict, step=self.global_step)
                 running_loss = 0.0
                 running_n = 0
                 if cfg.checkpoint_dir is not None:
@@ -203,7 +247,21 @@ class WorldModelTrainer:
         with torch.no_grad():
             for batch in self.val_loader:
                 features = _encode_batch(self.encoder, batch)
-                total += self.model(features)["loss"].item()
+                output = self.model(features)
+                total += output["loss"].item()
+
+                # Log per-level eval metrics from last eval batch
+                if n == 0 and "metrics" in output:
+                    m = output["metrics"]
+                    ll = output["level_losses"]
+                    num_levels = ll.size(0)
+                    eval_metrics = {}
+                    for i in range(num_levels):
+                        eval_metrics[f"eval_pred_loss/level_{i}"] = ll[i].item()
+                        eval_metrics[f"eval_z_sparsity/level_{i}"] = m["z_sparsity_achieved"][i].item()
+                        eval_metrics[f"eval_action_entropy/level_{i}"] = m["action_entropy"][i].item()
+                    self.accelerator.log(eval_metrics, step=self.global_step)
+
                 n += 1
                 if self.config.eval_batches is not None and n >= self.config.eval_batches:
                     break
@@ -268,9 +326,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--cache-dir", type=str, default="auto", help="Tensor cache dir ('auto', path, or 'none').")
     p.add_argument("--with-audio", action="store_true", help="Decode audio and train with AudioVideoEncoder.")
 
+    p.add_argument(
+        "--model", type=str, default=None,
+        help="Named model config (e.g. 'world-3L-base'). Overrides num-levels/encoder.",
+    )
+    p.add_argument("--list-models", action="store_true", help="Print available model configs and exit.")
     p.add_argument("--num-levels", type=int, default=3)
     p.add_argument("--encoder", type=str, default="dinov2-small")
-    p.add_argument("--checkpoint", type=Path, default=None, help="Resume from checkpoint.")
+    p.add_argument("--resume-from", type=Path, default=None, help="Path to checkpoint (.pt) to resume training from.")
 
     p.add_argument("--learning-rate", type=float, default=3e-4)
     p.add_argument("--warmup-steps", type=int, default=100)
@@ -283,6 +346,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    if args.list_models:
+        from worlds1k.model.configs import get_config
+        from worlds1k.model.configs import list_configs as _list_cfgs
+        from worlds1k.model.world_model import WorldModel
+
+        for name in sorted(_list_cfgs("world")):
+            cfg = get_config(name)
+            model = WorldModel.from_config(cfg)
+            trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            print(f"  {name:<20s} {_fmt(trainable):>6s} params   ({cfg.backbone_name})")  # noqa: T201
+        return
 
     if args.list_datasets:
         from worlds1k.data import list_datasets
@@ -298,26 +373,41 @@ def main(argv: list[str] | None = None) -> None:
 
     from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
-    if args.with_audio:
-        from worlds1k.model.audio_encoder import AudioVideoEncoder
+    # Build config from named preset or CLI args
+    if args.model is not None:
+        from worlds1k.model.configs import get_config
 
+        config = get_config(args.model)
+        config.image_size = args.image_size
+        if args.with_audio and config.audio_backbone_name is None:
+            config.audio_backbone_name = "whisper-tiny"
+            config.d_input = config.d_input + config.d_audio
+        print(f"using model preset: {args.model}")  # noqa: T201
+    elif args.with_audio:
         config = WorldModelConfig(
             num_levels=args.num_levels,
             backbone_name=args.encoder,
             image_size=args.image_size,
             d_input=512 + 256,  # visual + audio
         )
-        model = WorldModel.from_config(config)
-        encoder = AudioVideoEncoder.from_pretrained(args.encoder, 512, "whisper-tiny", 256)
-        mode = f"{args.encoder} + whisper-tiny"
     else:
-        from worlds1k.model.encoder_base import build_frame_encoder
-        from worlds1k.model.frame_encoder import VideoEncoder
-
         config = WorldModelConfig(num_levels=args.num_levels, backbone_name=args.encoder, image_size=args.image_size)
+
+    if args.with_audio:
+        from worlds1k.model.audio_encoder import AudioVideoEncoder
+
         model = WorldModel.from_config(config)
-        encoder = VideoEncoder(build_frame_encoder(config))
-        mode = args.encoder
+        encoder = AudioVideoEncoder.from_pretrained(
+            config.backbone_name, config.d_input - config.d_audio, "whisper-tiny", config.d_audio
+        )
+        mode = f"{config.backbone_name} + whisper-tiny"
+    else:
+        from worlds1k.model.encoder_base import build_vision_encoder
+        from worlds1k.model.vision_encoder import VideoEncoder
+
+        model = WorldModel.from_config(config)
+        encoder = VideoEncoder(build_vision_encoder(config))
+        mode = config.backbone_name
 
     n_train = sum(p.numel() for p in list(model.parameters()) + list(encoder.parameters()) if p.requires_grad)
     n_frozen = sum(p.numel() for p in list(model.parameters()) + list(encoder.parameters()) if not p.requires_grad)
@@ -356,8 +446,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     trainer = WorldModelTrainer(model, encoder, train_loader, config=trainer_config)
 
-    if args.checkpoint is not None:
-        trainer.load_checkpoint(args.checkpoint)
+    if args.resume_from is not None:
+        trainer.load_checkpoint(args.resume_from)
 
     if args.output_dir is not None:
         args.output_dir.mkdir(parents=True, exist_ok=True)

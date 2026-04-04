@@ -16,7 +16,7 @@ Pipeline:
 AudioVideoEncoder combines visual and audio streams via early fusion:
 
     Video clip (B, T, C, H, W) + Audio features (B, T, n_mels, T_audio)
-        → FrameEncoder per frame    → (B, T, d_visual)
+        → VisionEncoder per frame    → (B, T, d_visual)
         → AudioEncoder per window   → (B, T, d_audio)
         → concatenate               → (B, T, d_visual + d_audio)
         → WorldModel.forward()
@@ -32,8 +32,8 @@ from transformers import WhisperModel
 
 from worlds1k.model.encoder_base import (
     BaseAudioEncoder,
-    BaseFrameEncoder,
     BaseMultimodalEncoder,
+    BaseVisionEncoder,
 )
 
 # Whisper model name → (HuggingFace repo, encoder hidden dimension)
@@ -181,7 +181,7 @@ class AudioEncoder(BaseAudioEncoder):
 class AudioVideoEncoder(BaseMultimodalEncoder):
     """Early-fusion multimodal encoder combining visual and audio streams.
 
-    Encodes video frames through a :class:`BaseFrameEncoder` and audio
+    Encodes video frames through a :class:`BaseVisionEncoder` and audio
     segments through a :class:`BaseAudioEncoder`, then concatenates the
     resulting feature vectors along the channel dimension to produce a
     single fused representation per time step.
@@ -191,7 +191,7 @@ class AudioVideoEncoder(BaseMultimodalEncoder):
 
     Parameters
     ----------
-    frame_encoder : BaseFrameEncoder
+    vision_encoder : BaseVisionEncoder
         Per-frame visual encoder (shared across time steps).
     audio_encoder : BaseAudioEncoder
         Per-window audio encoder (shared across time steps).
@@ -199,11 +199,11 @@ class AudioVideoEncoder(BaseMultimodalEncoder):
 
     def __init__(
         self,
-        frame_encoder: BaseFrameEncoder,
+        vision_encoder: BaseVisionEncoder,
         audio_encoder: BaseAudioEncoder,
     ) -> None:
         super().__init__()
-        self.frame_encoder = frame_encoder
+        self.vision_encoder = vision_encoder
         self.audio_encoder = audio_encoder
 
     @classmethod
@@ -238,16 +238,16 @@ class AudioVideoEncoder(BaseMultimodalEncoder):
         AudioVideoEncoder
             Initialised multimodal encoder ready for use.
         """
-        from worlds1k.model.frame_encoder import FrameEncoder
+        from worlds1k.model.vision_encoder import VisionEncoder
 
-        frame_enc = FrameEncoder.from_pretrained(visual_model_name, d_visual, backbone_frozen=backbone_frozen)
+        vision_enc = VisionEncoder.from_pretrained(visual_model_name, d_visual, backbone_frozen=backbone_frozen)
         audio_enc = AudioEncoder.from_pretrained(audio_model_name, d_audio, backbone_frozen=backbone_frozen)
-        return cls(frame_enc, audio_enc)
+        return cls(vision_enc, audio_enc)
 
     @property
     def d_output(self) -> int:  # type: ignore[override]
         """Total output feature dimensionality (visual + audio, per frame)."""
-        return self.frame_encoder.d_output + self.audio_encoder.d_output
+        return self.vision_encoder.d_output + self.audio_encoder.d_output
 
     def forward(
         self,
@@ -275,7 +275,7 @@ class AudioVideoEncoder(BaseMultimodalEncoder):
         B, T = video.shape[:2]
 
         # --- Visual stream ---
-        visual_features = self.frame_encoder.encode_video(video)  # (B, T, d_visual)
+        visual_features = self.vision_encoder.encode_video(video)  # (B, T, d_visual)
 
         # --- Audio stream ---
         _, _, n_mels, T_audio = audio.shape

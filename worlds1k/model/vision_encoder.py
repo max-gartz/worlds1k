@@ -16,7 +16,7 @@ Pipeline:
 VideoEncoder extends this to process temporal sequences:
 
     Video clip (B, T, C, H, W)
-        → FrameEncoder.encode_video  → (B, T, d_output)
+        → VisionEncoder.encode_video  → (B, T, d_output)
         → WorldModel.forward()
 """
 
@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel
 
-from worlds1k.model.encoder_base import BaseFrameEncoder
+from worlds1k.model.encoder_base import BaseVisionEncoder
 
 # ImageNet channel-wise statistics used by DINOv2 preprocessing.
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -42,7 +42,7 @@ _DINOV2_REGISTRY: dict[str, tuple[str, int]] = {
 }
 
 
-class FrameEncoder(BaseFrameEncoder):
+class VisionEncoder(BaseVisionEncoder):
     """Frozen DINOv2 backbone with a learnable output projection.
 
     Loads a pretrained DINOv2 vision transformer and freezes all of its
@@ -125,8 +125,8 @@ class FrameEncoder(BaseFrameEncoder):
         d_output: int = 512,
         *,
         backbone_frozen: bool = True,
-    ) -> FrameEncoder:
-        """Create a FrameEncoder with a pretrained DINOv2 backbone.
+    ) -> VisionEncoder:
+        """Create a VisionEncoder with a pretrained DINOv2 backbone.
 
         This is a convenience constructor that mirrors the ``from_pretrained``
         pattern used elsewhere in the codebase.  It is functionally identical
@@ -145,12 +145,12 @@ class FrameEncoder(BaseFrameEncoder):
 
         Returns
         -------
-        FrameEncoder
+        VisionEncoder
             Initialised encoder with pretrained backbone loaded.
         """
         return cls(model_name, d_output, backbone_frozen=backbone_frozen)
 
-    def train(self, mode: bool = True) -> FrameEncoder:
+    def train(self, mode: bool = True) -> VisionEncoder:
         """Override train to keep the frozen backbone in eval mode."""
         super().train(mode)
         if self.backbone_frozen:
@@ -190,22 +190,22 @@ class FrameEncoder(BaseFrameEncoder):
 
 
 class VideoEncoder(nn.Module):
-    """Process video sequences frame-by-frame through a :class:`BaseFrameEncoder`.
+    """Process video sequences frame-by-frame through a :class:`BaseVisionEncoder`.
 
     This is a thin convenience wrapper — it delegates entirely to
-    :meth:`BaseFrameEncoder.encode_video`, which is provided by the ABC
-    for free.  Prefer calling ``frame_encoder.encode_video(video)``
+    :meth:`BaseVisionEncoder.encode_video`, which is provided by the ABC
+    for free.  Prefer calling ``vision_encoder.encode_video(video)``
     directly in new code.
 
     Parameters
     ----------
-    frame_encoder : BaseFrameEncoder
+    vision_encoder : BaseVisionEncoder
         The per-frame visual encoder (shared across all time steps).
     """
 
-    def __init__(self, frame_encoder: BaseFrameEncoder) -> None:
+    def __init__(self, vision_encoder: BaseVisionEncoder) -> None:
         super().__init__()
-        self.frame_encoder = frame_encoder
+        self.vision_encoder = vision_encoder
 
     @classmethod
     def from_pretrained(
@@ -215,7 +215,7 @@ class VideoEncoder(nn.Module):
         *,
         backbone_frozen: bool = True,
     ) -> VideoEncoder:
-        """Create a VideoEncoder with a fresh pretrained FrameEncoder.
+        """Create a VideoEncoder with a fresh pretrained VisionEncoder.
 
         Parameters
         ----------
@@ -232,13 +232,13 @@ class VideoEncoder(nn.Module):
         VideoEncoder
             Initialised video encoder ready for use.
         """
-        frame_enc = FrameEncoder.from_pretrained(model_name, d_output, backbone_frozen=backbone_frozen)
-        return cls(frame_enc)
+        vision_enc = VisionEncoder.from_pretrained(model_name, d_output, backbone_frozen=backbone_frozen)
+        return cls(vision_enc)
 
     @property
     def d_output(self) -> int:
         """Output feature dimensionality (per frame)."""
-        return self.frame_encoder.d_output
+        return self.vision_encoder.d_output
 
     def forward(self, video: torch.Tensor) -> torch.Tensor:
         """Encode a batch of video clips into per-frame feature sequences.
@@ -254,4 +254,4 @@ class VideoEncoder(nn.Module):
             Per-frame features, shape ``(B, T, d_output)``.  This tensor
             can be passed directly to :meth:`WorldModel.forward`.
         """
-        return self.frame_encoder.encode_video(video)
+        return self.vision_encoder.encode_video(video)

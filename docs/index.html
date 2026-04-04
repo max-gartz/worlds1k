@@ -403,7 +403,7 @@ footer a{color:var(--fg-dim)}
 <!-- Decoder -->
 <section id="decoder">
 <div class="container">
-  <h2><span class="n">08</span>Frame Decoder (Phase 2)</h2>
+  <h2><span class="n">08</span>Vision Decoder (Phase 2)</h2>
   <p class="lead">
     A separate decoder learns to read the frozen latent space &mdash; not reshape it.
   </p>
@@ -489,7 +489,7 @@ footer a{color:var(--fg-dim)}
       <div class="desc">Optional frozen speech encoder for multimodal training.</div>
     </div>
     <div class="arch-cell">
-      <div class="label">Frame Decoder</div>
+      <div class="label">Vision Decoder</div>
       <div class="value">ConvTranspose</div>
       <div class="desc">Phase 2. Transposed CNN mapping latents to pixels.</div>
     </div>
@@ -506,9 +506,9 @@ footer a{color:var(--fg-dim)}
     world_model.py      <span class="c"># Hierarchical predictive model</span>
     world_layer.py      <span class="c"># Single hierarchy level</span>
     encoder_base.py     <span class="c"># Abstract base classes + factories</span>
-    frame_encoder.py    <span class="c"># DINOv2 visual encoder</span>
+    vision_encoder.py   <span class="c"># DINOv2 visual encoder</span>
     audio_encoder.py    <span class="c"># Whisper audio encoder + AudioVideoEncoder</span>
-    frame_decoder.py    <span class="c"># Frame decoder (phase 2)</span>
+    vision_decoder.py   <span class="c"># Vision decoder (phase 2)</span>
     audio_decoder.py    <span class="c"># Audio decoder (phase 2, mel spectrograms)</span>
   train/
     world_model.py      <span class="c"># Phase 1: world model training + CLI</span>
@@ -541,15 +541,15 @@ uv run python -m worlds1k.train.world_model \
 
 <span class="c"># Phase 2: train decoders</span>
 uv run python -m worlds1k.train.decoder \
-  <span class="f">--checkpoint</span> <span class="s">checkpoints/latest.pt</span> \
+  <span class="f">--world-model</span> <span class="s">checkpoints/latest.pt</span> \
   <span class="f">--dataset</span> <span class="s">disney</span> \
   <span class="f">--max-frames</span> <span class="s">50000</span> \
   <span class="f">--output-dir</span> <span class="s">checkpoints/decoders</span>
 
 <span class="c"># Dream (generates HTML with video)</span>
 uv run python -m worlds1k.inference.dream \
-  <span class="f">--checkpoint</span> <span class="s">checkpoints/latest.pt</span> \
-  <span class="f">--decoder-checkpoint</span> <span class="s">checkpoints/decoders/frame_decoder.pt</span> \
+  <span class="f">--world-model</span> <span class="s">checkpoints/latest.pt</span> \
+  <span class="f">--vision-decoder</span> <span class="s">checkpoints/decoders/vision_decoder.pt</span> \
   <span class="f">--input</span> <span class="s">video.mp4</span> \
   <span class="f">--dream-steps</span> <span class="s">20</span></pre>
 </div>

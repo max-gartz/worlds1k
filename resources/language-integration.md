@@ -113,13 +113,13 @@ Conversational video is actually a better learning signal than narrated video fo
 
 ## Dreaming with Audio: Decoding Both Streams
 
-The frame decoder (phase 2) maps level-1 latents back to frames. The same pattern applies to audio: an audio decoder maps level-2 latents back to mel spectrograms, which an off-the-shelf vocoder (HiFi-GAN, Vocos) converts to waveform.
+The vision decoder (phase 2) maps level-1 latents back to frames. The same pattern applies to audio: an audio decoder maps level-2 latents back to mel spectrograms, which an off-the-shelf vocoder (HiFi-GAN, Vocos) converts to waveform.
 
 Level 2 is the right source for audio — one level-2 latent covers 8 frames ≈ 250ms, which maps naturally to a short audio segment. Level 1 is too fine-grained for audio; level 3 is too coarse.
 
 ```
 Dreamer: z_0 → z_1 → z_2 → ... (latent trajectory)
-  ├─ FrameDecoder:  z_t^(1) → frames → video
+  ├─ VisionDecoder:  z_t^(1) → frames → video
   └─ AudioDecoder:  z_t^(2) → mel spectrogram → vocoder → waveform
 ```
 

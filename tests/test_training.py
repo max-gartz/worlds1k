@@ -169,13 +169,13 @@ class TestCLI:
 class TestFullPipeline:
     def test_end_to_end_with_streaming(self):
         from worlds1k.data import StreamingVideoDataset
-        from worlds1k.model.encoder_base import build_frame_encoder
-        from worlds1k.model.frame_encoder import VideoEncoder
+        from worlds1k.model.encoder_base import build_vision_encoder
+        from worlds1k.model.vision_encoder import VideoEncoder
         from worlds1k.train.world_model import WorldModelTrainConfig, WorldModelTrainer
 
         config = WorldModelConfig(num_levels=3, image_size=64)
         model = WorldModel.from_config(config)
-        encoder = VideoEncoder(build_frame_encoder(config))
+        encoder = VideoEncoder(build_vision_encoder(config))
 
         ds = StreamingVideoDataset("ucf101", window_size=128, image_size=64, max_videos=2)
         loader = DataLoader(ds, batch_size=1)

@@ -71,33 +71,23 @@ HF_TOKEN=hf_xxx uv run python -m worlds1k.train.world_model \
   --dataset epic-kitchens --max-frames 100000 --with-audio --max-videos 1
 ```
 
-### Decode (Phase 2)
+### Decode (Phase 2 — Diffusion Decoder)
 
 ```bash
 uv run python -m worlds1k.train.decoder \
-  --checkpoint checkpoints/latest.pt --dataset disney --max-frames 50000 \
+  --world-model checkpoints/latest.pt --model world-3L-small \
+  --dataset disney --max-frames 50000 \
+  --d-model 128 --num-inference-steps 20 \
   --output-dir checkpoints/decoders
-
-# With audio decoder
-uv run python -m worlds1k.train.decoder \
-  --checkpoint checkpoints/latest.pt --dataset epic-kitchens --max-frames 50000 \
-  --with-audio --output-dir checkpoints/decoders
 ```
 
 ### Dream
 
 ```bash
-# Video only
 uv run python -m worlds1k.inference.dream \
-  --checkpoint checkpoints/latest.pt \
-  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
-  --input video.mp4 --dream-steps 20
-
-# Video + audio
-uv run python -m worlds1k.inference.dream \
-  --checkpoint checkpoints/latest.pt \
-  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
-  --audio-decoder-checkpoint checkpoints/decoders/audio_decoder.pt \
+  --world-model checkpoints/latest.pt \
+  --model world-3L-small \
+  --vision-decoder checkpoints/decoders/vision_decoder.pt \
   --input video.mp4 --dream-steps 20
 ```
 
@@ -132,13 +122,12 @@ worlds1k/
     world_model.py      # Hierarchical predictive model
     world_layer.py      # Single hierarchy level
     encoder_base.py     # Abstract base classes + factories
-    frame_encoder.py    # DINOv2 visual encoder
+    vision_encoder.py   # DINOv2 visual encoder
     audio_encoder.py    # Whisper audio encoder + AudioVideoEncoder
-    frame_decoder.py    # Frame decoder (phase 2)
-    audio_decoder.py    # Audio decoder (phase 2, mel spectrograms)
+    diffusion_decoder.py # Diffusion decoder (phase 2, latent-conditioned U-Net)
   train/
     world_model.py      # Phase 1: world model training + CLI
-    decoder.py          # Phase 2: frame + audio decoder training + CLI
+    decoder.py          # Phase 2: diffusion decoder training + CLI
   inference/
     dream.py            # Dreaming (autoregressive rollout) + CLI
   data.py               # Dataset registry + streaming with disk cache

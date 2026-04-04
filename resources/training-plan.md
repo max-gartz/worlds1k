@@ -90,18 +90,18 @@ uv run python -m worlds1k.train.world_model \
 
 ### Phase 2: Decoder Training
 
-After phase 1, train frame + audio decoders. The world model is frozen — runs ~4x faster.
+After phase 1, train vision + audio decoders. The world model is frozen — runs ~4x faster.
 
 ```bash
-# Frame decoder only
+# Vision decoder only
 uv run python -m worlds1k.train.decoder \
-  --checkpoint checkpoints/latest.pt \
+  --world-model checkpoints/latest.pt \
   --dataset disney --max-frames 1000000 \
   --output-dir checkpoints/decoders
 
-# Frame + audio decoders
+# Vision + audio decoders
 uv run python -m worlds1k.train.decoder \
-  --checkpoint checkpoints/latest.pt \
+  --world-model checkpoints/latest.pt \
   --dataset epic-kitchens --max-frames 1000000 \
   --with-audio --output-dir checkpoints/decoders
 ```
@@ -111,15 +111,15 @@ uv run python -m worlds1k.train.decoder \
 ```bash
 # Video only
 uv run python -m worlds1k.inference.dream \
-  --checkpoint checkpoints/latest.pt \
-  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
+  --world-model checkpoints/latest.pt \
+  --vision-decoder checkpoints/decoders/vision_decoder.pt \
   --input video.mp4 --dream-steps 20 --output dream.html
 
 # Video + audio
 uv run python -m worlds1k.inference.dream \
-  --checkpoint checkpoints/latest.pt \
-  --decoder-checkpoint checkpoints/decoders/frame_decoder.pt \
-  --audio-decoder-checkpoint checkpoints/decoders/audio_decoder.pt \
+  --world-model checkpoints/latest.pt \
+  --vision-decoder checkpoints/decoders/vision_decoder.pt \
+  --audio-decoder checkpoints/decoders/audio_decoder.pt \
   --input video.mp4 --dream-steps 20 --output dream.html
 ```
 

@@ -1,4 +1,4 @@
-"""Phase 2: train frame and/or audio decoders with frozen encoder.
+"""Phase 2: train diffusion decoder with frozen encoder.
 
 Uses HuggingFace Accelerate for mixed precision and device management.
 Logs to wandb when WANDB_API_KEY is set.
@@ -6,7 +6,8 @@ Logs to wandb when WANDB_API_KEY is set.
 Run directly::
 
     uv run python -m worlds1k.train.decoder \\
-        --checkpoint checkpoints/world_model.pt \\
+        --world-model checkpoints/latest.pt \\
+        --model world-3L-small \\
         --dataset disney --max-frames 50000 \\
         --output-dir checkpoints/decoders
 """
@@ -27,7 +28,7 @@ from accelerate import Accelerator
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
-    from worlds1k.model.world_model import WorldModel
+    from worlds1k.model.diffusion_decoder import DiffusionDecoderBase
 
 _SUFFIXES = ((1e9, "B"), (1e6, "M"), (1e3, "K"))
 
@@ -48,55 +49,53 @@ def _ftime(s: float) -> str:
 
 
 @dataclass
-class DecodeTrainConfig:
+class DiffusionDecoderTrainConfig:
     max_frames: int = 100_000
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-4
     weight_decay: float = 0.0
     eval_freq: int = 100
     grad_clip_norm: float = 1.0
 
 
 @dataclass
-class DecodeTrainResult:
+class DiffusionDecoderTrainResult:
     train_losses: list[float] = field(default_factory=list)
 
 
-class FrameDecoderTrainer:
-    """Phase 2: train frame decoder (latent -> frames) with Accelerate."""
+class DiffusionDecoderTrainer:
+    """Train diffusion decoder with frozen world model + encoder."""
 
     def __init__(
         self,
-        world_model: WorldModel,
         encoder: nn.Module,
-        decoder: nn.Module,
+        decoder: DiffusionDecoderBase,
         train_loader: DataLoader,
-        config: DecodeTrainConfig | None = None,
+        config: DiffusionDecoderTrainConfig | None = None,
     ) -> None:
-        self.config = config or DecodeTrainConfig()
+        self.config = config or DiffusionDecoderTrainConfig()
         use_wandb = os.environ.get("WANDB_API_KEY") is not None
         self.accelerator = Accelerator(mixed_precision="bf16", log_with="wandb" if use_wandb else None)
 
-        for p in world_model.parameters():
-            p.requires_grad = False
+        # Frozen encoder stays on CPU — only the decoder goes on GPU
         for p in encoder.parameters():
             p.requires_grad = False
-        world_model.eval()
         encoder.eval()
+        self.encoder = encoder.cpu()
 
         optimizer = torch.optim.AdamW(
             decoder.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay
         )
 
-        self.world_model, self.encoder, self.decoder, self.optimizer, self.train_loader = self.accelerator.prepare(
-            world_model, encoder, decoder, optimizer, train_loader
+        self.decoder, self.optimizer, self.train_loader = self.accelerator.prepare(
+            decoder, optimizer, train_loader
         )
 
-    def train(self) -> DecodeTrainResult:
+    def train(self) -> DiffusionDecoderTrainResult:
         cfg = self.config
         self.accelerator.init_trackers(
-            "worlds1k-frame-decoder", config={"lr": cfg.learning_rate, "max_frames": cfg.max_frames}
+            "worlds1k-diffusion-decoder", config={"lr": cfg.learning_rate, "max_frames": cfg.max_frames}
         )
-        result = DecodeTrainResult()
+        result = DiffusionDecoderTrainResult()
         t0 = time.monotonic()
         frames_seen = 0
         running_loss = 0.0
@@ -109,23 +108,39 @@ class FrameDecoderTrainer:
 
             video = batch[0]
             with torch.no_grad():
-                features = self.encoder(video) if len(batch) == 1 else self.encoder(video, batch[1])
-                z = self.world_model(features)["z"][0]
+                cpu_video = video.cpu().float()
+                features = self.encoder(cpu_video) if len(batch) == 1 else self.encoder(cpu_video, batch[1].cpu())
+                features = features.to(video.device)
 
-            b, t, d = z.shape
+            b, t = video.shape[:2]
+            d = features.shape[-1]
             frames_seen += b * t
 
-            with self.accelerator.autocast():
-                recon = self.decoder(z.reshape(b * t, d)).view(b, t, *video.shape[2:])
-                loss = nn.functional.mse_loss(recon, video)
+            # Flatten (frame, feature) pairs and process in small chunks
+            frames_flat = video.reshape(b * t, *video.shape[2:])  # (B*T, C, H, W)
+            feat_flat = features.reshape(b * t, d)  # (B*T, d_input)
+            chunk_size = min(4, b * t)
+            chunk_loss = 0.0
+            n_chunks = 0
 
-            self.accelerator.backward(loss)
+            for ci in range(0, b * t, chunk_size):
+                f_chunk = frames_flat[ci : ci + chunk_size]
+                feat_chunk = feat_flat[ci : ci + chunk_size]
+
+                with self.accelerator.autocast():
+                    out = self.decoder(f_chunk, feat_chunk)
+                    loss = out["loss"] / max((b * t) // chunk_size, 1)
+
+                self.accelerator.backward(loss)
+                chunk_loss += out["loss"].item()
+                n_chunks += 1
+
             if cfg.grad_clip_norm > 0:
                 self.accelerator.clip_grad_norm_(self.decoder.parameters(), cfg.grad_clip_norm)
             self.optimizer.step()
             self.optimizer.zero_grad()
 
-            running_loss += loss.item()
+            running_loss += chunk_loss / n_chunks
             running_n += 1
 
             if running_n % cfg.eval_freq == 0:
@@ -133,103 +148,10 @@ class FrameDecoderTrainer:
                 result.train_losses.append(tl)
                 pct = 100 * frames_seen / cfg.max_frames
                 self.accelerator.print(
-                    f"frame decoder | {_ftime(time.monotonic() - t0)} | "
+                    f"diffusion decoder | {_ftime(time.monotonic() - t0)} | "
                     f"frames {_fmt(frames_seen)}/{_fmt(cfg.max_frames)} ({pct:.0f}%) | loss {tl:.6f}"
                 )
-                self.accelerator.log({"frame_decoder_loss": tl, "frames": frames_seen}, step=frames_seen)
-                running_loss = 0.0
-                running_n = 0
-
-        if running_n > 0:
-            result.train_losses.append(running_loss / running_n)
-        self.accelerator.end_training()
-        return result
-
-
-class AudioDecoderTrainer:
-    """Phase 2: train audio decoder (latent -> mel) with Accelerate."""
-
-    def __init__(
-        self,
-        world_model: WorldModel,
-        encoder: nn.Module,
-        audio_decoder: nn.Module,
-        train_loader: DataLoader,
-        config: DecodeTrainConfig | None = None,
-    ) -> None:
-        self.config = config or DecodeTrainConfig()
-        use_wandb = os.environ.get("WANDB_API_KEY") is not None
-        self.accelerator = Accelerator(mixed_precision="bf16", log_with="wandb" if use_wandb else None)
-
-        for p in world_model.parameters():
-            p.requires_grad = False
-        for p in encoder.parameters():
-            p.requires_grad = False
-        world_model.eval()
-        encoder.eval()
-
-        optimizer = torch.optim.AdamW(
-            audio_decoder.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay
-        )
-
-        self.world_model, self.encoder, self.audio_decoder, self.optimizer, self.train_loader = (
-            self.accelerator.prepare(world_model, encoder, audio_decoder, optimizer, train_loader)
-        )
-
-    def train(self) -> DecodeTrainResult:
-        cfg = self.config
-        self.accelerator.init_trackers(
-            "worlds1k-audio-decoder", config={"lr": cfg.learning_rate, "max_frames": cfg.max_frames}
-        )
-        result = DecodeTrainResult()
-        t0 = time.monotonic()
-        frames_seen = 0
-        running_loss = 0.0
-        running_n = 0
-        self.audio_decoder.train()
-
-        for batch in self.train_loader:
-            if frames_seen >= cfg.max_frames:
-                break
-            if len(batch) < 2:
-                continue
-
-            audio = batch[1]
-
-            with torch.no_grad():
-                features = self.encoder(batch[0], batch[1])
-                z = self.world_model(features)["z"][0]
-
-            b, t, d = z.shape
-            frames_seen += b * t
-
-            with self.accelerator.autocast():
-                mel_pred = self.audio_decoder(z.reshape(b * t, d))
-                mel_pred = mel_pred.view(b, t, mel_pred.shape[1], mel_pred.shape[2])
-                t_mel = mel_pred.shape[3]
-                target = audio[:, :, :, :t_mel]
-                if target.shape[3] < t_mel:
-                    target = nn.functional.pad(target, (0, t_mel - target.shape[3]))
-                loss = nn.functional.mse_loss(mel_pred, target)
-
-            self.accelerator.backward(loss)
-            if cfg.grad_clip_norm > 0:
-                self.accelerator.clip_grad_norm_(self.audio_decoder.parameters(), cfg.grad_clip_norm)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-
-            running_loss += loss.item()
-            running_n += 1
-
-            if running_n % cfg.eval_freq == 0:
-                tl = running_loss / running_n
-                result.train_losses.append(tl)
-                pct = 100 * frames_seen / cfg.max_frames
-                self.accelerator.print(
-                    f"audio decoder | {_ftime(time.monotonic() - t0)} | "
-                    f"frames {_fmt(frames_seen)}/{_fmt(cfg.max_frames)} ({pct:.0f}%) | loss {tl:.6f}"
-                )
-                self.accelerator.log({"audio_decoder_loss": tl, "frames": frames_seen}, step=frames_seen)
+                self.accelerator.log({"diffusion_loss": tl, "frames": frames_seen}, step=frames_seen)
                 running_loss = 0.0
                 running_n = 0
 
@@ -240,47 +162,66 @@ class AudioDecoderTrainer:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="worlds1k.train.decoder", description="Train frame/audio decoders (phase 2).")
-    p.add_argument("--checkpoint", type=Path, required=True, help="World model checkpoint from phase 1.")
-    p.add_argument("--dataset", type=str, required=True, help="Dataset name or HuggingFace path.")
+    p = argparse.ArgumentParser(prog="worlds1k.train.decoder", description="Train diffusion decoder (phase 2).")
+    p.add_argument("--world-model", type=Path, default=None, help="Path to world model checkpoint (.pt) from phase 1.")
+    p.add_argument("--model", type=str, default=None, help="Named world model config (e.g. 'world-3L-base').")
+    p.add_argument("--dataset", type=str, default=None, help="Dataset name or HuggingFace path.")
     p.add_argument("--max-frames", type=int, default=100_000)
     p.add_argument("--max-videos", type=int, default=None)
     p.add_argument("--window-size", type=int, default=128)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--image-size", type=int, default=64)
-    p.add_argument("--learning-rate", type=float, default=1e-3)
+    p.add_argument("--decoder-arch", type=str, choices=["adagn", "unet"], default="adagn",
+                    help="Decoder architecture: adagn (MPS) or unet (GPU cross-attention).")
+    p.add_argument("--decoder-size", type=str, choices=["small", "base", "large"], default="base",
+                    help="Decoder size tier.")
+    p.add_argument("--list-decoders", action="store_true", help="Print decoder param counts and exit.")
+    p.add_argument("--num-inference-steps", type=int, default=20, help="DDIM steps for sampling (default: 20).")
+    p.add_argument("--learning-rate", type=float, default=1e-4)
     p.add_argument("--eval-freq", type=int, default=50)
-    p.add_argument("--with-audio", action="store_true", help="Also train audio decoder.")
     p.add_argument("--encoder", type=str, default="dinov2-small")
-    p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--output-dir", type=Path, default=None)
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
+    from worlds1k.model.configs import build_diffusion_decoder, get_config, list_decoder_configs
+
+    if args.list_decoders:
+        if args.model is None:
+            print("error: --list-decoders requires --model (e.g. --model world-3L-base)")  # noqa: T201
+            return
+        world_cfg = get_config(args.model)
+        print(f"  decoders for {args.model} (d_input={world_cfg.d_input}):")  # noqa: T201
+        for name, count in sorted(list_decoder_configs(world_cfg).items()):
+            print(f"    {name:<20s} {_fmt(count):>6s} params")  # noqa: T201
+        return
+
     from worlds1k.data import StreamingVideoDataset
-    from worlds1k.model.frame_decoder import FrameDecoder
-    from worlds1k.model.world_model import WorldModel, WorldModelConfig
 
-    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    if args.model is None:
+        print("error: --model is required for training")  # noqa: T201
+        return
+    if args.dataset is None:
+        print("error: --dataset is required for training")  # noqa: T201
+        return
+    if args.output_dir is None:
+        print("error: --output-dir is required for training")  # noqa: T201
+        return
 
-    if args.with_audio:
-        from worlds1k.model.audio_encoder import AudioVideoEncoder
+    config = get_config(args.model)
+    config.image_size = args.image_size
 
-        config = WorldModelConfig(image_size=args.image_size, d_input=512 + 256)
-        model = WorldModel.from_config(config)
-        model.load_state_dict(ckpt["model"])
-        encoder = AudioVideoEncoder.from_pretrained(args.encoder, 512, "whisper-tiny", 256)
-        encoder.load_state_dict(ckpt["encoder"])
-    else:
-        from worlds1k.model.encoder_base import build_frame_encoder
-        from worlds1k.model.frame_encoder import VideoEncoder
+    from worlds1k.model.encoder_base import build_vision_encoder
+    from worlds1k.model.vision_encoder import VideoEncoder
 
-        config = WorldModelConfig(image_size=args.image_size, backbone_name=args.encoder)
-        model = WorldModel.from_config(config)
-        model.load_state_dict(ckpt["model"])
-        encoder = VideoEncoder(build_frame_encoder(config))
+    encoder = VideoEncoder(build_vision_encoder(config))
+
+    # Load encoder weights from world model checkpoint if provided
+    if args.world_model is not None:
+        ckpt = torch.load(args.world_model, map_location="cpu", weights_only=True)
         encoder.load_state_dict(ckpt["encoder"])
 
     from torch.utils.data import DataLoader
@@ -289,28 +230,33 @@ def main(argv: list[str] | None = None) -> None:
         args.dataset,
         window_size=args.window_size,
         image_size=args.image_size,
-        with_audio=args.with_audio,
         max_videos=args.max_videos,
         token=os.environ.get("HF_TOKEN"),
     )
     loader = DataLoader(ds, batch_size=args.batch_size)
-    cfg = DecodeTrainConfig(max_frames=args.max_frames, learning_rate=args.learning_rate, eval_freq=args.eval_freq)
+    cfg = DiffusionDecoderTrainConfig(
+        max_frames=args.max_frames, learning_rate=args.learning_rate, eval_freq=args.eval_freq
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("training frame decoder...")  # noqa: T201
-    frame_dec = FrameDecoder(config.d_latents[0], frame_height=args.image_size, frame_width=args.image_size)
-    fr = FrameDecoderTrainer(model, encoder, frame_dec, loader, config=cfg).train()
-    torch.save({"decoder": frame_dec.state_dict()}, args.output_dir / "frame_decoder.pt")
-    print(f"frame decoder done. loss: {fr.train_losses[-1]:.6f}")  # noqa: T201
-
-    if args.with_audio:
-        from worlds1k.model.audio_decoder import AudioDecoder
-
-        print("training audio decoder...")  # noqa: T201
-        audio_dec = AudioDecoder(config.d_latents[0])
-        ar = AudioDecoderTrainer(model, encoder, audio_dec, loader, config=cfg).train()
-        torch.save({"audio_decoder": audio_dec.state_dict()}, args.output_dir / "audio_decoder.pt")
-        print(f"audio decoder done. loss: {ar.train_losses[-1]:.6f}")  # noqa: T201
+    print(f"training {args.decoder_arch}-{args.decoder_size} diffusion decoder...")  # noqa: T201
+    decoder = build_diffusion_decoder(
+        config, arch=args.decoder_arch, size=args.decoder_size, num_inference_steps=args.num_inference_steps
+    )
+    n_params = sum(p.numel() for p in decoder.parameters())
+    print(f"decoder params: {_fmt(n_params)}")  # noqa: T201
+    fr = DiffusionDecoderTrainer(encoder, decoder, loader, config=cfg).train()
+    torch.save(
+        {
+            "decoder": decoder.state_dict(),
+            "arch": args.decoder_arch,
+            "size": args.decoder_size,
+            "d_model": decoder.d_model,
+            "num_inference_steps": args.num_inference_steps,
+        },
+        args.output_dir / "vision_decoder.pt",
+    )
+    print(f"diffusion decoder done. loss: {fr.train_losses[-1]:.6f}")  # noqa: T201
 
 
 if __name__ == "__main__":

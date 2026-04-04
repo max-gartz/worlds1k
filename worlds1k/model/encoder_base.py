@@ -4,7 +4,7 @@ Defines the contracts that all frame, audio, and multimodal encoders must
 satisfy so that the training script and :class:`WorldModel` remain agnostic
 to the concrete backbone (DINOv2, Whisper, future alternatives, …).
 
-Concrete implementations live in :mod:`frame_encoder` and
+Concrete implementations live in :mod:`vision_encoder` and
 :mod:`audio_encoder`; this module provides only the ABCs plus lightweight
 factory helpers that map a :class:`WorldModelConfig` to the right encoder.
 """
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from worlds1k.model.world_model import WorldModelConfig
 
 
-class BaseFrameEncoder(ABC, nn.Module):
+class BaseVisionEncoder(ABC, nn.Module):
     """Contract for single-frame visual encoders.
 
     Subclasses must implement :meth:`forward` (single-image encoding) and
@@ -140,8 +140,8 @@ class BaseMultimodalEncoder(ABC, nn.Module):
         ...
 
 
-def build_frame_encoder(config: WorldModelConfig) -> BaseFrameEncoder:
-    """Instantiate the frame encoder specified by *config*.
+def build_vision_encoder(config: WorldModelConfig) -> BaseVisionEncoder:
+    """Instantiate the vision encoder specified by *config*.
 
     Parameters
     ----------
@@ -151,12 +151,12 @@ def build_frame_encoder(config: WorldModelConfig) -> BaseFrameEncoder:
 
     Returns
     -------
-    BaseFrameEncoder
-        A concrete frame encoder ready for use.
+    BaseVisionEncoder
+        A concrete vision encoder ready for use.
     """
-    from worlds1k.model.frame_encoder import FrameEncoder
+    from worlds1k.model.vision_encoder import VisionEncoder
 
-    return FrameEncoder(
+    return VisionEncoder(
         config.backbone_name,
         config.d_input,
         backbone_frozen=config.backbone_frozen,
@@ -208,6 +208,6 @@ def build_multimodal_encoder(config: WorldModelConfig) -> BaseMultimodalEncoder:
     """
     from worlds1k.model.audio_encoder import AudioVideoEncoder
 
-    frame_enc = build_frame_encoder(config)
+    vision_enc = build_vision_encoder(config)
     audio_enc = build_audio_encoder(config)
-    return AudioVideoEncoder(frame_enc, audio_enc)
+    return AudioVideoEncoder(vision_enc, audio_enc)
